@@ -1,0 +1,277 @@
+name: Source Code PII and Code Review
+
+on:
+  push:
+    branches: [ main ]
+  pull_request: # trigger
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  APP_ID: ${{ secrets.APP_ID }}
+  APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+  GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT || vars.GCP_PROJECT_ID }}
+  GOOGLE_CLOUD_PROJECT_NUMBER: ${{ secrets.GOOGLE_CLOUD_PROJECT_NUMBER || vars.GCP_PROJECT_NUMBER }}
+  GOOGLE_GENAI_USE_VERTEXAI: 'true'
+  GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION || 'us-central1' }}
+  AGY_TELEMETRY_ENABLED: 'true'
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  AGY_SETTINGS: |-
+    {
+      "modelProvider": "gemini",
+      "model": {
+        "name": "gemini-3.7-flash",
+        "effort": "medium",
+        "maxSessionTurns": 40
+      },
+      "telemetry": {
+        "enabled": true,
+        "target": "local",
+        "outfile": ".gemini/telemetry.log"
+      }
+    }
+
+jobs:
+  scan-and-evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud (WIF)'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: 'projects/${{ env.GOOGLE_CLOUD_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/aaa-github-pool/providers/github-provider'
+          service_account: '${{ env.GOOGLE_CLOUD_PROJECT_NUMBER }}-compute@developer.gserviceaccount.com'
+          project_id: ${{ env.GOOGLE_CLOUD_PROJECT }}
+
+      - name: Generate GitHub App Token
+        if: env.APP_ID != '' && env.APP_PRIVATE_KEY != ''
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+        with:
+          install_components: 'alpha'
+
+      - name: 'Verify Authentication'
+        run: gcloud auth list
+
+      - name: 'Cache Antigravity CLI & Plugins'
+        uses: actions/cache@v4
+        id: cache-agy
+        with:
+          path: |
+            ~/.local/bin/agy
+            ~/.antigravity
+            ~/.gemini
+          key: ${{ runner.os }}-antigravity-cli-v2-${{ hashFiles('.agents/**') }}
+          restore-keys: |
+            ${{ runner.os }}-antigravity-cli-v2-
+
+      - name: 'Install Antigravity CLI (agy)'
+        if: steps.cache-agy.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+      - name: 'Add agy to PATH'
+        run: |
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.antigravity/bin" >> $GITHUB_PATH
+          echo "/usr/local/bin" >> $GITHUB_PATH
+
+      - name: 'Verify Antigravity CLI Installation'
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.antigravity/bin:/usr/local/bin:$PATH"
+          agy --version
+
+      - name: 'Configure Antigravity CLI & MCP Environment'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.G_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p reports ~/.gemini/antigravity-cli .gemini/ .agents/
+          echo '{"projects":{}}' > ~/.gemini/projects.json
+          echo "$AGY_SETTINGS" > ~/.gemini/antigravity-cli/settings.json
+          echo "$AGY_SETTINGS" > ~/.gemini/settings.json
+
+          # Generate workspace MCP configuration for GitHub integration
+          cat <<EOF > .agents/mcp_config.json
+          {
+            "mcpServers": {
+              "github": {
+                "command": "docker",
+                "args": [
+                  "run",
+                  "-i",
+                  "--rm",
+                  "-e",
+                  "GITHUB_PERSONAL_ACCESS_TOKEN",
+                  "ghcr.io/github/github-mcp-server:v0.27.0"
+                ],
+                "env": {
+                  "GITHUB_PERSONAL_ACCESS_TOKEN": "$GH_TOKEN"
+                }
+              }
+            }
+          }
+          EOF
+
+      - name: 'Google Cloud DLP Sensitive Data & PII Scan'
+        run: |
+          echo "Starting Cloud DLP Sensitive Data & PII Scan..."
+          echo "### PII SCAN RESULTS ###" > reports/pii-scan.txt
+          echo "[]" > reports/pii-scan.json
+
+          TOTAL_FINDINGS=0
+          while IFS= read -r -d '' file; do
+            if [ -s "$file" ]; then
+              echo "Inspecting $file..." >> reports/pii-scan.txt
+              RESULT=$(gcloud alpha dlp text inspect \
+                --info-types=EMAIL_ADDRESS,PHONE_NUMBER,LOCATION,CREDIT_CARD_NUMBER,AUTH_TOKEN,API_KEY \
+                --content-file="$file" \
+                --format="json" 2>/dev/null || echo "{}")
+              
+              FINDINGS_COUNT=$(echo "$RESULT" | jq '.findings | length // 0' 2>/dev/null || echo 0)
+              if [ "$FINDINGS_COUNT" -gt 0 ]; then
+                echo "⚠️ [PII DETECTED] $file ($FINDINGS_COUNT findings)" | tee -a reports/pii-scan.txt
+                echo "$RESULT" | jq -r '.findings[] | "  - Type: \(.infoType.name) | Likelihood: \(.likelihood)"' >> reports/pii-scan.txt
+                TOTAL_FINDINGS=$((TOTAL_FINDINGS + FINDINGS_COUNT))
+              fi
+            fi
+          done < <(find . -type f \
+            -not -path '*/.*' \
+            -not -path './reports/*' \
+            -not -path './plans/*' \
+            -not -path './extensions/*' \
+            -not -path './mcp-servers/*' \
+            -not -path './.agents/*' \
+            -not -name "gha-creds-*" \
+            -not -name "*.lock" \
+            -not -name "*.png" \
+            -not -name "*.jpg" \
+            -not -name "*.zip" \
+            -size -500k \
+            \( -name "*.tf" -o -name "*.yml" -o -name "*.yaml" -o -name "*.md" -o -name "*.sh" -o -name "*.py" -o -name "*.json" -o -name "*.toml" -o -name "*.html" -o -name "*.sql" \) \
+            -print0)
+
+          if [ "$TOTAL_FINDINGS" -eq 0 ]; then
+            echo "✅ No sensitive data or PII detected by Cloud DLP." | tee -a reports/pii-scan.txt
+          else
+            echo "❌ Total PII findings detected: $TOTAL_FINDINGS" | tee -a reports/pii-scan.txt
+          fi
+
+      - name: 'Run PR Auto-Review via Antigravity Code Reviewer'
+        if: github.event.pull_request.number != null
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.G_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.G_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ steps.app-token.outputs.token || secrets.G_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          echo "Invoking Code Reviewer for PR #${{ github.event.pull_request.number }}..."
+          DLP_REPORT="$(cat reports/pii-scan.txt 2>/dev/null || echo 'No DLP scan report available.')"
+          agy -p "Perform an automated code review on Pull Request #${{ github.event.pull_request.number }} in repository ${{ github.repository }}.
+
+          Inputs:
+          1. Inspect the pull request diff for logic errors, null pointers, security risks, PEP 8 conventions, and error handling.
+          2. Cloud DLP Sensitive Data & PII Scan Findings:
+          $DLP_REPORT
+
+          Instructions:
+          - Use the available GitHub MCP tools to create a review and submit comments on the pull request.
+          - For any files or modified lines flagged with sensitive data / PII leaks or credentials in the DLP report or diff, comment directly on the affected files in the PR with explicit remediation instructions (e.g. removing sensitive tokens, moving secrets to environment variables/Secret Manager, or masking/redacting PII).
+          - Submit inline review comments for verifiable logic bugs, edge cases, and security vulnerabilities.
+          - Submit a concise final review summary that explicitly calls out code quality status and any required PII remediations." \
+          --dangerously-skip-permissions \
+          --output-format text | tee reports/pr-review.txt
+
+      - name: 'Quality Gate Decision via Release Engineer Agent'
+        run: |
+          set -o pipefail
+          echo "Aggregating audit reports for Quality Gate evaluation..."
+          {
+            echo "========================================================"
+            echo "### 1. CLOUD DLP PII SCAN REPORT"
+            echo "========================================================"
+            [ -f reports/pii-scan.txt ] && cat reports/pii-scan.txt || echo "PII scan report missing"
+            echo ""
+            echo "========================================================"
+            echo "### 2. PR CODE REVIEW REPORT"
+            echo "========================================================"
+            [ -f reports/pr-review.txt ] && cat reports/pr-review.txt || echo "PR review report not applicable (Push event)"
+          } > final_report.txt
+
+          echo "Invoking Antigravity Release Engineer Agent..."
+          agy -p "Act as a Lead Release Engineer and Security Gatekeeper. Evaluate the following combined DLP and PR code review reports against our release criteria.
+
+          Quality Gate Criteria:
+          1. ZERO PII, credential, or authentication token leaks detected by Cloud DLP.
+          2. PR Code Review (if applicable) contains no unresolved blocking architectural or critical security failures.
+
+          Instructions:
+          - If ALL criteria are met without exception, output exactly 'GATE_PASSED' on the first line, followed by a brief summary.
+          - If ANY criterion fails, output exactly 'GATE_FAILED' on the first line, followed by a numbered bulleted list detailing every failing reason, severity, and impacted component.
+
+          COMBINED REPORT:
+          $(cat final_report.txt)" \
+          --dangerously-skip-permissions \
+          --output-format text | tee reports/decision.txt
+
+      - name: 'Collect Antigravity Telemetry Logs'
+        if: always()
+        run: |
+          mkdir -p reports/telemetry
+          [ -f .gemini/telemetry.log ] && cp .gemini/telemetry.log reports/telemetry/ || true
+          [ -f ~/.gemini/antigravity-cli/cli.log ] && cp ~/.gemini/antigravity-cli/cli.log reports/telemetry/ || true
+          [ -f ~/.gemini/antigravity-cli/history.jsonl ] && cp ~/.gemini/antigravity-cli/history.jsonl reports/telemetry/ || true
+          [ -d ~/.gemini/antigravity-cli/log ] && cp -r ~/.gemini/antigravity-cli/log reports/telemetry/ || true
+          mkdir -p reports/telemetry/transcripts
+          find ~/.gemini/antigravity-cli/brain -name "transcript*.jsonl" -exec cp {} reports/telemetry/transcripts/ \; 2>/dev/null || true
+
+      - name: 'Generate GitHub Actions Job Summary'
+        if: always()
+        run: |
+          echo "## 🛡️ Antigravity CI/CD Quality Gate Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if grep -q "GATE_PASSED" reports/decision.txt 2>/dev/null; then
+            echo "### ✅ Status: **GATE PASSED**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Status: **GATE FAILED**" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Release Engineer Decision" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat reports/decision.txt 2>/dev/null || echo "No decision report generated." >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Archived Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "GCS Destination: \`gs://${{ env.GOOGLE_CLOUD_PROJECT }}-scan-reports/${{ github.run_id }}_${{ github.run_attempt }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: 'Upload Audit Reports & Telemetry to GCS'
+        if: always()
+        uses: 'google-github-actions/upload-cloud-storage@v2'
+        with:
+          path: 'reports'
+          destination: '${{ env.GOOGLE_CLOUD_PROJECT }}-scan-reports/${{ github.run_id }}_${{ github.run_attempt }}'
+
+      - name: 'Enforce Quality Gate'
+        run: |
+          if grep -q "GATE_FAILED" reports/decision.txt; then
+            echo "❌ Quality Gate Failed! Halting deployment."
+            cat reports/decision.txt
+            exit 1
+          fi
+          echo "✅ Quality Gate Passed successfully!"
