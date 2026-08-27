@@ -130,6 +130,7 @@ The scoring system is split into two pure functions in `scorer/usage.py`. Neithe
 - **`spec-adversary`** (`.agents/skills/spec-adversary/SKILL.md`): Adversarial interrogator for `docs/spec.md`. Discovers ambiguities, asks one choice at a time via `ask_question`, and records decisions in the spec.
 - **`coder-dispatch`** (`.agents/skills/coder-dispatch/SKILL.md`): Dispatches pinned commits to the remote `coder-agent` on Vertex AI / GEAP via `geap` MCP tools, streams trajectories, and manages GitHub/Jira ticket lifecycles.
 - **`jira-plan-cli`** (`.agents/skills/jira-plan-cli/SKILL.md`): Integrates with Jira/Confluence via `acli` and generates implementation plans in `plans/`.
+- **`jira-get-ticket`** (`.agents/skills/jira-get-ticket/SKILL.md`): Retrieves and inspects Jira tickets/workitems using `acli`.
 
 ### Available Subagents
 - **`contract-writer`** (`.agents/agents/contract-writer/agent.md`): Authors acceptance contract tests (`test_parse_contract.py`, `test_score_contract.py`, `test_integration.py`) and stubbed `scorer/usage.py` directly from spec decisions without implementing behavior.
