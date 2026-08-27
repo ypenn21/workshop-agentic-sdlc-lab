@@ -56,7 +56,7 @@ contract. Write the `MonthSnapshot` list out longhand in
 `test_score_contract.py`, that longhand list *is* the interface.
 
 Import the modules the spec names. A contract that imports nothing cannot fail,
-and failing is what it is for.
+and failing is what it is for. Check the repository configuration (such as `pythonpath` in `pyproject.toml`) to ensure imports resolve correctly.
 
 ## The interface, so that the tests can fail
 
