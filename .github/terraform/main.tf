@@ -43,10 +43,13 @@ resource "google_service_account_iam_member" "wif_bindings" {
   
   # Locked specifically to your repository
   member = "principalSet://iam.googleapis.com/projects/${var.project_number}/locations/global/workloadIdentityPools/${var.pool_id}/attribute.repository/${each.value}"
+
+  depends_on = [module.gh_oidc]
 }
 
 # 4. GCS Bucket for Scan Reports
 resource "google_storage_bucket" "scan_reports" {
+  project  = var.project_id
   name     = "${var.project_id}-scan-reports"
   location = "US"
   force_destroy = true
