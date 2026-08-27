@@ -24,7 +24,7 @@ Before dispatching, ensure all required parameters (`owner/repo`, `COMMIT_SHA`, 
    - If the repository cannot be determined automatically or is ambiguous, prompt the user using `ask_question`.
 
 2. **Base Commit (`COMMIT_SHA`)**:
-   - Run `git rev-parse origin/main` (or the relevant branch/HEAD).
+   - Determine the current active branch (e.g., `git branch --show-current`) and its latest commit (e.g., `git rev-parse HEAD` or `git rev-parse "origin/$(git branch --show-current)"`).
    - Ensure the commit has been pushed to the remote repository so the remote agent can clone and checkout the exact SHA.
    - If the target base branch or commit is ambiguous, clarify with `ask_question`.
 
@@ -73,7 +73,7 @@ When the run finishes:
    - Repository and base commit SHA dispatched
    - Branch where changes were pushed
    - Associated issue number
-   - GitHub compare link: `https://github.com/<owner>/<repo>/compare/main...<branch>`
+   - GitHub compare link: `https://github.com/<owner>/<repo>/compare/<base_branch>...<branch>`
    - Next steps for testing and reviewing the branch:
      ```bash
      git fetch origin <branch> && git checkout -b review origin/<branch> && uv run pytest -q
