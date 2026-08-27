@@ -116,3 +116,37 @@ Format the retrieved ticket details cleanly for the user or downstream workflow:
 #### Description
 <DESCRIPTION_TEXT>
 ```
+
+---
+
+## Phase 4: Optional Ticket Updates & Transition
+
+After presenting the ticket details, prompt the user to determine if any updates or transitions should be made to the Jira ticket.
+
+1. **Prompt for Updates**:
+   Use the `ask_question` tool to ask if the user wants to update the ticket:
+   - Option 1: `(Recommended) No changes needed - proceed`
+   - Option 2: `Transition status (e.g., In Progress, In Review, Done)`
+   - Option 3: `Assign ticket (e.g., assign to @me or a specific user)`
+   - Option 4: `Edit ticket fields (Summary, Description, Priority, Type)`
+
+2. **Execute Requested Updates via `acli`**:
+   - **Transition Status**:
+     ```bash
+     acli jira workitem transition --key <KEY> --status "<STATUS>" --yes
+     ```
+   - **Assign Ticket**:
+     ```bash
+     acli jira workitem edit --key <KEY> --assignee "@me" --yes
+     ```
+   - **Edit Summary, Description, Priority, or Type**:
+     ```bash
+     acli jira workitem edit --key <KEY> --summary "<NEW_SUMMARY>" --yes
+     acli jira workitem edit --key <KEY> --description "<NEW_DESCRIPTION>" --yes
+     acli jira workitem edit --key <KEY> --priority "<PRIORITY>" --yes
+     acli jira workitem edit --key <KEY> --type "<TYPE>" --yes
+     ```
+
+3. **Confirm Updates**:
+   Display confirmation of the applied changes or updated ticket state to the user before proceeding.
+
