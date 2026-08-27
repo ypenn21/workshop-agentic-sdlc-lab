@@ -1,3 +1,5 @@
+"""Interface and data structures for account health scoring."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

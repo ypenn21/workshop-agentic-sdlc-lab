@@ -26,8 +26,7 @@ account_id,month,seats_active,logins,tickets_open
 | `tickets_open` | Support tickets still open at the end of the month |
 
 The first line is the header shown above. `account_id`, `month`, `logins` and
-`tickets_open` are always present and never blank. `seats_active` may be blank,
-which is parsed as 0. Rows may appear in any order, and each account has at most one row per
+`tickets_open` are always present and never blank. `seats_active` may be blank, which is parsed as `0`. Rows may appear in any order, and each account has at most one row per
 month.
 
 ## The two halves
@@ -85,8 +84,7 @@ is floored at 0. It never goes negative.
 rules appear in the table above. An account with no rules fired has an empty
 `reasons` list.
 
-The seat-decline rule compares the latest month's seat count against the first available month's seat count for that account in the export. It needs at least two months to compare. An account with only
-one month in the export does not fire it, and cannot lose those 4 points.
+The seat-decline rule compares the latest month's seat count against the maximum seat count across all prior recorded months for that account. If the latest month has fallen by 40% or more from that prior peak, the deduction applies. An account with only one month in the export does not fire it, and cannot lose those 4 points.
 
 ## Tiers
 
@@ -96,7 +94,7 @@ one month in the export does not fire it, and cannot lose those 4 points.
 | `MEDIUM` | 5–7 |
 | `AT RISK` | 0–4 |
 
-A score of 5 belongs to the `MEDIUM` tier. Only accounts scoring 0–4 are `AT RISK`.
+`Result.tier` is assigned strictly according to the score ranges in the table above (e.g. score 5 is `MEDIUM`). Downstream digest filtering of scores 5 and below is out of scope for the scorer.
 
 ## Out of scope
 
@@ -107,9 +105,9 @@ produces the score and nothing else.
 
 | ID | Rule a builder follows | Passage it resolves | Case that would differ |
 | --- | --- | --- | --- |
-| D01 | The seat decline calculation compares the latest month's seat count against the first available month's seat count for that account. | The latest month's seat count has fallen by 40% or more | vandelay in fixtures/usage.csv (10 -> 6 -> 5 seats) compares 5 against 10 (50% drop, fires) rather than 6 (16.7% drop, would not fire). |
-| D02 | Score tier ranges are HEALTHY (8–10), MEDIUM (5–7), and AT RISK (0–4). A score of 5 is assigned to MEDIUM. | Any account scoring 5 or below should be surfaced to CS as at risk | initech in fixtures/usage.csv (score 5) is assigned tier MEDIUM rather than AT RISK. |
-| D03 | A blank seats_active field in the export is parsed as 0. | `account_id`, `month`, `logins` and `tickets_open` are always present and never blank. | acme in fixtures/usage.csv (2026-03 blank seats) parses as seats_active=0 (causing 100% drop from 2026-01 and firing seats down sharply) rather than omitting the row. |
+| D-1 | Compare the latest month's seat count to the maximum seat count across all prior recorded months for that account. Deduct 4 points if the latest month is 40% or more below that prior maximum. | "The latest month's seat count has fallen by 40% or more" | For `vandelay` (10 -> 6 -> 5 seats), comparing to previous month (6 to 5) would not fire, but comparing to prior peak (10 to 5) fires `seats down sharply`. |
+| D-2 | A blank `seats_active` value in the CSV is parsed as `0`. `MonthSnapshot.seats_active` is always an `int`. | "`account_id`, `month`, `logins` and `tickets_open` are always present and never blank." | For `acme` with `2026-03,,5,0`, `seats_active` is 0 (dropping from peak 10 to 0, firing `seats down sharply`), rather than parsed as None or throwing an error. |
+| D-3 | `Result.tier` maps strictly to the table ranges (`HEALTHY` 8–10, `MEDIUM` 5–7, `AT RISK` 0–4). A score of 5 yields `MEDIUM`. | "Any account scoring 5 or below should be surfaced to CS as at risk..." | For `initech` (score 5), `tier` is `"MEDIUM"`, not `"AT RISK"`. |
 
 ## Open questions
 
