@@ -1,134 +1,227 @@
-# Account Health Scorer
+# CI/CD Antigravity Python SDK Migration
 
 **Status:** Approved
 
 ## What this does
 
-Customer Success needs to identify at-risk customer accounts before cancellation requests arrive. This service ingests monthly customer usage CSV exports, calculates a deterministic and explainable health score with explicit deduction reasons, and categorizes accounts into health tiers so Customer Success Managers can prioritize proactive outreach.
+Migrates the CI/CD Quality Gate and PR Code Review pipeline from shell-based `agy` CLI one-shot execution to the type-safe `google-antigravity` Python SDK (`google-antigravity`) using GCP Workload Identity Federation (WIF) and Vertex AI Application Default Credentials (ADC). It eliminates brittle text/grep parsing in CI pipelines by enforcing deterministic Pydantic structured output models for security quality gates and automated line-level PR code reviews.
 
 ## Input
 
-The input arrives as raw CSV export text (UTF-8 encoded) or a path to a CSV export file.
-The CSV schema is guaranteed to have the header:
-```csv
-account_id,month,seats_active,logins,tickets_open
-```
+### 1. Quality Gate Agent Inputs (`.github/scripts/quality_gate_agent.py`)
+- `reports/pii-scan.txt`: Output text report from the Google Cloud DLP scan step containing detected sensitive data (`EMAIL_ADDRESS`, `AUTH_TOKEN`, `API_KEY`, etc.), finding counts, and inspected file paths.
+  - *Guarantees:* File may be missing or 0 bytes if DLP scan failed or was skipped (handled fail-closed).
+- `reports/pr-review.txt` / `reports/pr-review.json`: Text and structured JSON review reports emitted by the PR Reviewer Agent.
+  - *Guarantees:* Present during pull request events; absent or placeholder text during push (non-PR) events.
+- Environment variables:
+  - `GOOGLE_CLOUD_PROJECT`: Google Cloud project ID for Vertex AI initialization.
+  - `GOOGLE_CLOUD_LOCATION`: Vertex AI region (defaults to `"us-central1"`).
+  - `PULL_REQUEST_NUMBER`: String representing the pull request number if executing in a PR context (optional / unset on push events).
 
-### Guarantees and Invariants:
-1. **Header:** The first row contains column headers and must be skipped.
-2. **Column Definitions:**
-   - `account_id`: Non-empty string identifier (whitespace trimmed).
-   - `month`: String in ISO 8601 year-month format (`YYYY-MM`).
-   - `seats_active`: Integer count of active seats. If blank, empty, or whitespace, coerced to `0`.
-   - `logins`: Integer count of user logins during the month. If blank, coerced to `0`.
-   - `tickets_open`: Integer count of open support tickets in the month. If blank, coerced to `0`.
-3. **Ordering:** Rows may appear in arbitrary order across accounts and months.
-4. **Duplicate Handling:** If multiple rows exist for the same `(account_id, month)` pair, the last encountered row is retained.
-5. **Empty Account Defense:** Accounts with no valid usage rows are omitted from parsed results.
+### 2. PR Reviewer Agent Inputs (`.github/scripts/pr_reviewer_agent.py`)
+- Environment variables:
+  - `PULL_REQUEST_NUMBER` / `PR_NUMBER`: Active pull request number. If unset or empty, the script skips execution immediately.
+  - `GH_TOKEN` / `GITHUB_TOKEN` / `GITHUB_PERSONAL_ACCESS_TOKEN`: GitHub authentication token with pull request read and comment/review submission permissions.
+  - `GITHUB_REPOSITORY` / `REPOSITORY`: Target repository in `owner/repo` format.
+  - `GOOGLE_CLOUD_PROJECT`: Google Cloud project ID for Vertex AI initialization.
+  - `GOOGLE_CLOUD_LOCATION`: Vertex AI region (defaults to `"us-central1"`).
+- `reports/pii-scan.txt`: Cloud DLP scan output provided as context to detect sensitive information in modified PR files.
+- PR Git Diff: Changed files, diff hunks, and line additions fetched via GitHub MCP tools.
 
 ## The two halves
 
-The system is split into two pure functions in `scorer/usage.py` and a CLI boundary in `scorer/main.py`. The pure functions perform zero filesystem, network, or environment I/O.
+The interface contract defines data structures, enums, Pydantic schemas, and pure helper signatures implemented in `.github/scripts/quality_gate_agent.py` and `.github/scripts/pr_reviewer_agent.py`.
 
-### Data Structures (`scorer/usage.py`)
+### 1. Domain Models and Schemas
 
 ```python
-from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+from pydantic import BaseModel, Field, model_validator
 
-@dataclass(frozen=True)
-class MonthSnapshot:
-    account_id: str
-    month: str          # "YYYY-MM"
-    seats_active: int
-    logins: int
-    tickets_open: int
 
-@dataclass(frozen=True)
-class Result:
-    score: int          # Range: 0 to 10
-    tier: str           # "HEALTHY" | "MEDIUM" | "AT RISK"
-    reasons: list[str]  # Ordered list of deduction reasons
+class SeverityLevel(str, Enum):
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class ViolationCategory(str, Enum):
+    PII_LEAK = "PII_LEAK"
+    CREDENTIAL_LEAK = "CREDENTIAL_LEAK"
+    SECURITY_VULNERABILITY = "SECURITY_VULNERABILITY"
+    ARCHITECTURAL_DEFECT = "ARCHITECTURAL_DEFECT"
+
+
+class PRFindingSeverity(str, Enum):
+    BLOCKER = "BLOCKER"
+    WARNING = "WARNING"
+    SUGGESTION = "SUGGESTION"
+    INFO = "INFO"
+
+
+class ReviewStatus(str, Enum):
+    APPROVE = "APPROVE"
+    REQUEST_CHANGES = "REQUEST_CHANGES"
+    COMMENT = "COMMENT"
+
+
+class FailureDetail(BaseModel):
+    category: ViolationCategory
+    component: str
+    severity: SeverityLevel
+    reason: str
+    remediation: str
+
+
+class QualityGateDecision(BaseModel):
+    passed: bool
+    summary: str
+    failures: list[FailureDetail] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_failures_consistency(self) -> "QualityGateDecision":
+        if self.passed and len(self.failures) > 0:
+            raise ValueError(
+                "QualityGateDecision cannot be passed=True with non-empty failures"
+            )
+        if not self.passed and len(self.failures) == 0:
+            raise ValueError(
+                "QualityGateDecision cannot be passed=False with empty failures"
+            )
+        return self
+
+
+class InlineFinding(BaseModel):
+    file_path: str
+    line_number: Optional[int] = None
+    severity: PRFindingSeverity
+    title: str
+    details: str
+    suggestion: str
+    pii_leak: bool = False
+
+
+class PRReviewReport(BaseModel):
+    overall_status: ReviewStatus
+    summary: str
+    findings: list[InlineFinding] = Field(default_factory=list)
 ```
 
-### Pure Function Interfaces (`scorer/usage.py`)
+### 2. Pure Helper Signatures
 
-1. **CSV Ingestion Interface:**
-   ```python
-   def parse_usage(csv_text: str) -> dict[str, list[MonthSnapshot]]:
-       """Group the export text by account, each list in ascending month order.
-       
-       Omit accounts with no recorded months. Blank numerical fields are coerced to 0.
-       """
-   ```
+```python
+def validate_and_sanitize_findings(
+    findings: list[InlineFinding],
+    modified_files_diff: dict[str, list[int]],
+) -> tuple[list[InlineFinding], list[InlineFinding]]:
+    """Separates findings into valid inline findings (where file_path exists in diff and
+    line_number is within modified hunks) and general review findings (invalid coordinates,
+    missing lines, or out-of-hunk modifications).
+    """
+    ...
 
-2. **Scoring Engine Interface:**
-   ```python
-   def score(months: list[MonthSnapshot]) -> Result:
-       """Score one account's chronological month history.
-       
-       Raises ValueError if months is empty.
-       """
-   ```
 
-### CLI Boundary Interface (`scorer/main.py`)
-- Reads the input CSV file from the filesystem.
-- Invokes `parse_usage(text)`.
-- Iterates over accounts sorted alphabetically by `account_id`.
-- Scores each account using `score(months)`.
-- Outputs formatted lines to stdout:
-  `{account:<10} {score:>2}  {tier:<8} {reasons}`
-  (If reasons list is empty, outputs `"-"`).
+def format_text_decision(decision: QualityGateDecision) -> str:
+    """Converts QualityGateDecision into deterministic formatted text starting with
+    'GATE_PASSED' or 'GATE_FAILED' followed by summary and failure enumeration.
+    """
+    ...
+
+
+def format_pr_review_text(report: PRReviewReport) -> str:
+    """Converts PRReviewReport into human-readable text summary detailing review status,
+    summary, and itemized findings with remediation suggestions.
+    """
+    ...
+```
+
+### 3. Agent Entry Point Signatures
+
+```python
+async def evaluate_quality_gate(
+    pii_report_path: str = "reports/pii-scan.txt",
+    pr_review_path: str = "reports/pr-review.txt",
+    project_id: Optional[str] = None,
+    location: str = "us-central1",
+    pr_number: Optional[str] = None,
+) -> QualityGateDecision:
+    """Executes Quality Gate Agent using LocalAgentConfig(vertex=True, response_schema=QualityGateDecision).
+    Evaluates scan and review reports fail-closed, writing reports/gate-decision.json and
+    reports/decision.txt, and isolated telemetry to reports/telemetry/quality_gate_agent.
+    """
+    ...
+
+
+async def run_pr_review(
+    pr_number: Optional[str] = None,
+    repo: Optional[str] = None,
+    token: Optional[str] = None,
+    pii_report_path: str = "reports/pii-scan.txt",
+    project_id: Optional[str] = None,
+    location: str = "us-central1",
+) -> Optional[PRReviewReport]:
+    """Executes PR Reviewer Agent using LocalAgentConfig(vertex=True, response_schema=PRReviewReport)
+    and GitHub MCP Server. Performs line-coordinate validation, submits review and comments,
+    writes reports/pr-review.json and reports/pr-review.txt, and logs telemetry to
+    reports/telemetry/pr_review_agent.
+    """
+    ...
+```
 
 ## Rules
 
-A builder must follow these deterministic rules:
-
-1. **Initial Score:** Every account starts with a baseline score of `10` points.
-2. **Deduction Rule 1 - Seat Decline (−4 points):**
-   - Condition: Compare the latest month's `seats_active` ($m_n$) against the maximum `seats_active` across all prior recorded months ($m_1, \dots, m_{n-1}$). If prior peak $> 0$ and $m_n \le 0.60 \times \text{prior\_peak}$ (a decline of $\ge 40\%$), deduct `4` points.
-   - Reason String: `"seats down sharply"`.
-   - Exemption: If the account has only 1 month of history or if all prior months had `seats_active == 0`, this rule does not fire.
-3. **Deduction Rule 2 - Low Engagement (−3 points):**
-   - Condition: If the latest month's `logins < 3`, deduct `3` points.
-   - Reason String: `"low engagement"`.
-4. **Deduction Rule 3 - Unresolved Support Load (−2 points):**
-   - Condition: If the latest month's `tickets_open >= 2`, deduct `2` points.
-   - Reason String: `"unresolved support load"`.
-5. **Reason Ordering:** When multiple deductions fire, append reasons in the strict deterministic order:
-   1. `"seats down sharply"`
-   2. `"low engagement"`
-   3. `"unresolved support load"`
-6. **Score Lower Bound:** The final score is clamped at `0`: `score = max(0, 10 - sum(deductions))`.
-7. **Tier Classification:**
-   - Score `8..10`: `"HEALTHY"`
-   - Score `5..7`: `"MEDIUM"`
-   - Score `0..4`: `"AT RISK"`
-8. **Chronological Sorting:** `parse_usage` groups entries by `account_id` and sorts each account's `MonthSnapshot` list ascending by `month` (`YYYY-MM`).
-9. **Blank Metric Coercion:** Empty, blank, or whitespace strings for `seats_active`, `logins`, or `tickets_open` parse as `0`.
-10. **Empty History Defense:** `score([])` raises `ValueError("Cannot score empty month history")`.
+1. **Keyless Vertex AI Authentication (ADC / WIF):**
+   - Agents instantiate `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `"us-central1"`), and model `gemini-2.5-flash`.
+   - Never accept, require, or inspect `GEMINI_API_KEY` or static service account keys in environment or configurations.
+2. **Deterministic Quality Gate Evaluation:**
+   - Zero tolerance for sensitive data: Any finding in `reports/pii-scan.txt` (or PR review with `pii_leak=True` or `severity=BLOCKER`) mandates `passed=False` with `CRITICAL` or `HIGH` severity `FailureDetail`.
+   - Invariant validation: Deserialized responses must pass `QualityGateDecision.model_validate(data)` enforcing `passed == (len(failures) == 0)`.
+3. **Fail-Closed Missing Report Safety:**
+   - If `reports/pii-scan.txt` is missing, unreadable, or 0 bytes, `evaluate_quality_gate()` evaluates `passed=False` with `category=ViolationCategory.SECURITY_VULNERABILITY`, `severity=SeverityLevel.CRITICAL`, `component="Cloud DLP"`, `reason="Required Cloud DLP scan report (reports/pii-scan.txt) is missing, unreadable, or empty"`, and `remediation="Ensure Cloud DLP scan step executes successfully before quality gate evaluation"`.
+   - On push / non-PR events (`PULL_REQUEST_NUMBER` unset), missing `reports/pr-review.txt` defaults to `"No PR review report available (push event or non-PR)."` and does not fail the gate.
+   - On active PR events (`PULL_REQUEST_NUMBER` set), missing `reports/pr-review.txt` evaluates `passed=False` with `HIGH` severity.
+   - Scripts must never raise unhandled `FileNotFoundError`.
+4. **PR Review Non-PR Early Exit:**
+   - If `PULL_REQUEST_NUMBER` is unset or empty, `pr_reviewer_agent.py` prints `"No pull request number provided; skipping PR review."` and exits immediately with status `0` without initializing LLM or Docker MCP containers.
+5. **GitHub MCP Container Execution & Coordinate Resilience:**
+   - PR Reviewer configures `types.McpStdioServer(name="github", command="docker", args=["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "-e", "GITHUB_REPOSITORY", "ghcr.io/github/github-mcp-server:v0.27.0"], env={"GITHUB_PERSONAL_ACCESS_TOKEN": token, "GITHUB_REPOSITORY": repo})`.
+   - Any finding with `severity == PRFindingSeverity.BLOCKER` or `pii_leak == True` forces `PRReviewReport.overall_status = ReviewStatus.REQUEST_CHANGES`.
+   - Inline findings must have `file_path` and `line_number` validated against modified PR diff hunks before calling inline comment tools. Findings on unparseable, `None`, or out-of-hunk lines must fall back to the top-level PR review comment body to prevent GitHub API 422 errors.
+6. **Dual-Output and Telemetry Isolation:**
+   - Quality gate script writes `reports/gate-decision.json` and `reports/decision.txt`.
+   - PR reviewer script writes `reports/pr-review.json` and `reports/pr-review.txt`.
+   - Telemetry directories are configured via `app_data_dir` to `reports/telemetry/quality_gate_agent` and `reports/telemetry/pr_review_agent`.
+   - All scripts execute `os.makedirs(..., exist_ok=True)` on parent directories before writing files.
+7. **Exit Code & Enforcement Separation:**
+   - `quality_gate_agent.py` and `pr_reviewer_agent.py` exit with return code `0` upon successfully writing report artifacts, ensuring telemetry collection and job summaries execute.
+   - The dedicated CI workflow step `Enforce Quality Gate` evaluates `reports/gate-decision.json` and exits with return code `1` if `passed != true` or the file is missing/corrupt.
 
 ## Out of scope
 
-1. Direct database connections, CRM integrations, or REST API endpoints.
-2. Writing back health scores or updating remote ticketing systems.
-3. Machine learning models, probabilistic churn predictions, or weighted trend analysis.
-4. Parsing or validating months outside the standard `YYYY-MM` format.
-5. Interactive GUI, web frontend, or user authentication.
+- Interactive CLI prompts (`input()`) or interactive terminal sessions.
+- Direct cloud resource provisioning or deployment triggers inside agent Python scripts (handled by GitHub Actions and Terraform).
+- Web UI dashboard rendering or HTML report generation (handled natively via `$GITHUB_STEP_SUMMARY` and GCS report archiving).
+- Direct Git commit execution by agent scripts.
+- Modifying core application domain models or scoring logic in `scorer/usage.py` and `scorer/main.py`.
 
 ## Decisions
 
 | ID | Rule a builder follows | Passage it resolves | Case that would differ |
 | --- | --- | --- | --- |
-| **D-1** | Latest month seats compared against peak across all *prior* recorded months ($m_1 \dots m_{n-1}$). Deduct 4 points if decline $\ge 40\%$ and prior peak $> 0$. | "fallen by 40% or more compared to the peak seat count across all prior recorded months" | Latest month has 6 seats, prior months were 4 and 10. Prior peak is 10, decline is $(10-6)/10 = 40\%$, rule fires (−4). |
-| **D-2** | Single-month accounts and accounts where prior peak is 0 never trigger seat decline deduction. | "Single-month accounts do not trigger this rule." | Account with only 1 month (e.g., 5 seats) or prior months having 0 seats does not trigger seat drop deduction. |
-| **D-3** | Deduct 3 points if latest month `logins < 3`. | "Fewer than 3 logins in the latest month." | Account with `logins == 2` deducts 3 points; `logins == 3` triggers no deduction. |
-| **D-4** | Deduct 2 points if latest month `tickets_open >= 2`. | "2 or more tickets open in the latest month." | Account with `tickets_open == 2` deducts 2 points; `tickets_open == 1` triggers no deduction. |
-| **D-5** | Deduction reasons must appear in deterministic order: `"seats down sharply"`, `"low engagement"`, `"unresolved support load"`. | "ordered list of reasons for deductions that fired" | If low engagement and seat decline both fire, `reasons` is `["seats down sharply", "low engagement"]`. |
-| **D-6** | Calculated score is floored at 0 (`max(0, 10 - deductions)`). | "floored at 0, starting at 10" | Cumulative deductions totaling 11 points result in a score of `0` instead of `-1`. |
-| **D-7** | Tier classification ranges: `8..10` → `"HEALTHY"`, `5..7` → `"MEDIUM"`, `0..4` → `"AT RISK"`. Score `5` is `"MEDIUM"`. | `"HEALTHY"`: 8–10, `"MEDIUM"`: 5–7, `"AT RISK"`: 0–4 | A score of `5` is mapped to `"MEDIUM"`, `7` to `"MEDIUM"`, `8` to `"HEALTHY"`. |
-| **D-8** | `parse_usage` skips header and sorts snapshots chronologically ascending by month per account. | "each list in ascending month order" | Unordered CSV rows `2026-03` before `2026-01` are sorted as `[2026-01, 2026-03]`. |
-| **D-9** | Blank or whitespace strings in numeric CSV fields are coerced to integer `0`. | "blank in CSV is parsed as 0" | Row `acme,2026-03,,5,0` parses `seats_active` as `0`. |
-| **D-10** | `score([])` raises `ValueError`. `parse_usage` omits accounts with no valid usage records. | "An account with no months to score is omitted, so score() is never called with an empty list." | Calling `score([])` directly raises `ValueError("Cannot score empty month history")`. |
+| D-1 | Authenticate to GCP and Vertex AI using Workload Identity Federation (WIF) OIDC token exchange (`google-github-actions/auth@v2`) and `vertex=True` with `GOOGLE_APPLICATION_CREDENTIALS` | How agents authenticate without static credentials in CI | Attempting to pass `GEMINI_API_KEY` or static service account keys in environment or agent config |
+| D-2 | Configure `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `us-central1`), and model `gemini-2.5-flash` | What model provider and region settings to instantiate SDK agents with | Attempting to use default local Gemini Developer API or unconfigured project ID |
+| D-3 | `QualityGateDecision` requires `passed: bool`, `summary: str`, and `failures: list[FailureDetail]`, with invariant validator enforcing `passed == (len(failures) == 0)` | What schema determines gate pass/fail and prevents inconsistent states | Returning `passed=True` with non-empty failures, or `passed=False` with empty failures |
+| D-4 | `PRReviewReport` requires `overall_status: ReviewStatus`, `summary: str`, and `findings: list[InlineFinding]`. Any finding with `BLOCKER` or `pii_leak=True` mandates `ReviewStatus.REQUEST_CHANGES` and maps to `CRITICAL` severity in Quality Gate | How PR findings translate to PR review status and downstream quality gate failures | Returning `APPROVE` or `COMMENT` despite blocker findings or PII leaks |
+| D-5 | If `PULL_REQUEST_NUMBER` is unset or empty, `pr_reviewer_agent.py` prints message and exits 0 immediately without invoking LLM or Docker MCP server | What happens when PR review script runs during a `push` event | Script failing or hanging trying to find a non-existent PR on push events |
+| D-6 | Quality gate and PR reviewer scripts must emit both structured JSON (`reports/gate-decision.json`, `reports/pr-review.json`) and human-readable formatted text (`reports/decision.txt`, `reports/pr-review.txt`) | How output is formatted for both automated verification and log inspection | Emitting only JSON (breaking text display steps) or only text (breaking typed validation) |
+| D-7 | If `reports/pii-scan.txt` is missing, unreadable, or 0 bytes, evaluate `passed=False` with CRITICAL severity. If `reports/pr-review.txt` is missing on push events, use fallback text; on active PR events, evaluate `passed=False`. Scripts never throw `FileNotFoundError` | How missing or corrupted input scan files are handled | Script crashing with `FileNotFoundError` or silently passing when DLP scan was skipped |
+| D-8 | Standardize CI runner on `actions/setup-python@v5` (Python 3.11) with `pip install google-antigravity "pydantic>=2.0.0,<3.0.0"`, removing legacy `curl \| bash` `agy` CLI installation | How CI runner installs and manages agent dependencies | Downloading and caching binary `agy` CLI in workflow |
+| D-9 | `quality_gate_agent.py` exits with status `0` upon generating reports; downstream step `Enforce Quality Gate` parses `reports/gate-decision.json` and exits `1` if `passed != true` | When and where CI pipeline halts on quality gate failure | Script exiting `1` prematurely, skipping GCS telemetry upload and job summary generation |
+| D-10 | Isolate telemetry directories to `reports/telemetry/quality_gate_agent` and `reports/telemetry/pr_review_agent` via `app_data_dir` in `LocalAgentConfig`, archived to GCS bucket `gs://${PROJECT}-scan-reports/${RUN_ID}_${RUN_ATTEMPT}` | How agent telemetry and session logs are isolated and archived | Telemetry files overwriting each other in a shared directory or remaining unarchived |
+| D-11 | Launch GitHub MCP container `ghcr.io/github/github-mcp-server:v0.27.0` via `docker run -i --rm` injecting `GITHUB_PERSONAL_ACCESS_TOKEN` from `GH_TOKEN` and `GITHUB_REPOSITORY` | How the PR reviewer agent connects to GitHub MCP server | Missing `-i` flag (breaking stdio JSON-RPC) or missing environment variables |
+| D-12 | Validate `file_path` and `line_number` against PR diff hunks before calling inline comment tools; append findings with invalid coordinates to top-level review comment body | How findings on untouched lines or unparseable line numbers are commented | GitHub API throwing 422 Unprocessable Entity when creating review comments on invalid lines |
 
 ## Open questions
 
@@ -136,8 +229,6 @@ None.
 
 ## The gate
 
-Code starts when all three hold:
-
 - **Status** is `Approved`
 - **Open questions** is empty
-- Every rule, in Rules and in Decisions, is one a builder could follow without asking anybody
+- Every rule, in Rules and in Decisions, is directly implementable by a builder without assumptions
