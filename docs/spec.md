@@ -1,57 +1,39 @@
-# CI/CD Antigravity Python SDK Migration
+# Automated GitHub PR Review & Positive Comment Posting
 
 **Status:** Approved
 
 ## What this does
 
-Migrates the CI/CD Quality Gate and PR Code Review pipeline from shell-based `agy` CLI one-shot execution to the type-safe `google-antigravity` Python SDK (`google-antigravity`) using GCP Workload Identity Federation (WIF) and Vertex AI Application Default Credentials (ADC). It eliminates brittle text/grep parsing in CI pipelines by enforcing deterministic Pydantic structured output models for security quality gates and automated line-level PR code reviews.
+Enhances the Automated PR Reviewer Agent (`.github/scripts/pr_reviewer_agent.py`) to submit formal GitHub Pull Request Reviews (`POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`). It delivers deterministic positive, encouraging approval comments acknowledging clean diffs and zero DLP findings when PRs are clean, posts structured inline and summary comments when defects or security findings exist, and provides bounded 422 fallback resilience and non-fatal network error handling.
 
 ## Input
 
-### 1. Quality Gate Agent Inputs (`.github/scripts/quality_gate_agent.py`)
-- `reports/pii-scan.txt`: Output text report from the Google Cloud DLP scan step containing detected sensitive data (`EMAIL_ADDRESS`, `AUTH_TOKEN`, `API_KEY`, etc.), finding counts, and inspected file paths.
-  - *Guarantees:* File may be missing or 0 bytes if DLP scan failed or was skipped (handled fail-closed).
-- `reports/pr-review.txt` / `reports/pr-review.json`: Text and structured JSON review reports emitted by the PR Reviewer Agent.
-  - *Guarantees:* Present during pull request events; absent or placeholder text during push (non-PR) events.
-- Environment variables:
-  - `GOOGLE_CLOUD_PROJECT`: Google Cloud project ID for Vertex AI initialization.
-  - `GOOGLE_CLOUD_LOCATION`: Vertex AI region (defaults to `"us-central1"`).
-  - `PULL_REQUEST_NUMBER`: String representing the pull request number if executing in a PR context (optional / unset on push events).
+### 1. Function & Execution Parameters
+- `report`: `PRReviewReport` Pydantic model instance containing `overall_status`, `summary`, and `findings` list.
+- `pr_number`: String or integer representing the active pull request number (e.g. `"42"` or `42`).
+- `repo`: String representing the repository in `owner/repo` format (e.g. `"octocat/Hello-World"`). Sanitized to strip whitespace, quotes, and `.git` suffix.
+- `token`: GitHub Personal Access Token or GitHub Actions token (`GH_TOKEN`, `GITHUB_TOKEN`, or `GITHUB_PERSONAL_ACCESS_TOKEN`) with `pull-requests: write` permission.
+- `modified_files_diff`: Optional dictionary mapping modified file paths to lists of modified line numbers (`dict[str, list[int]] | None`) representing diff hunks.
 
-### 2. PR Reviewer Agent Inputs (`.github/scripts/pr_reviewer_agent.py`)
-- Environment variables:
-  - `PULL_REQUEST_NUMBER` / `PR_NUMBER`: Active pull request number. If unset or empty, the script skips execution immediately.
-  - `GH_TOKEN` / `GITHUB_TOKEN` / `GITHUB_PERSONAL_ACCESS_TOKEN`: GitHub authentication token with pull request read and comment/review submission permissions.
-  - `GITHUB_REPOSITORY` / `REPOSITORY`: Target repository in `owner/repo` format.
-  - `GOOGLE_CLOUD_PROJECT`: Google Cloud project ID for Vertex AI initialization.
-  - `GOOGLE_CLOUD_LOCATION`: Vertex AI region (defaults to `"us-central1"`).
-- `reports/pii-scan.txt`: Cloud DLP scan output provided as context to detect sensitive information in modified PR files.
-- PR Git Diff: Changed files, diff hunks, and line additions fetched via GitHub MCP tools.
+### 2. Environment Variables & CLI Inputs
+- Parameter resolution hierarchy: `sys.argv` (CLI argument) > Primary Environment Variable > Fallback Environment Variable.
+  - PR Number: `sys.argv[1]` > `PULL_REQUEST_NUMBER` > `PR_NUMBER`
+  - Repository: `sys.argv[2]` > `GITHUB_REPOSITORY` > `REPOSITORY`
+  - Token: `sys.argv[3]` > `GH_TOKEN` > `GITHUB_TOKEN` > `GITHUB_PERSONAL_ACCESS_TOKEN`
+- If `pr_number` is unset or empty, the review agent gracefully skips execution and exits with status `0`.
+
+---
 
 ## The two halves
 
-The interface contract defines data structures, enums, Pydantic schemas, and pure helper signatures implemented in `.github/scripts/quality_gate_agent.py` and `.github/scripts/pr_reviewer_agent.py`.
+The interface contract specifies domain types, Pydantic schemas, function signatures, and GitHub REST API review payload schemas.
 
-### 1. Domain Models and Schemas
+### 1. Domain Models & Pydantic Schemas
 
 ```python
 from enum import Enum
-from typing import Optional
+from typing import Optional, Union
 from pydantic import BaseModel, Field, model_validator
-
-
-class SeverityLevel(str, Enum):
-    CRITICAL = "CRITICAL"
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-
-
-class ViolationCategory(str, Enum):
-    PII_LEAK = "PII_LEAK"
-    CREDENTIAL_LEAK = "CREDENTIAL_LEAK"
-    SECURITY_VULNERABILITY = "SECURITY_VULNERABILITY"
-    ARCHITECTURAL_DEFECT = "ARCHITECTURAL_DEFECT"
 
 
 class PRFindingSeverity(str, Enum):
@@ -61,36 +43,14 @@ class PRFindingSeverity(str, Enum):
     INFO = "INFO"
 
 
+# Backward compatibility alias
+ReviewSeverity = PRFindingSeverity
+
+
 class ReviewStatus(str, Enum):
     APPROVE = "APPROVE"
     REQUEST_CHANGES = "REQUEST_CHANGES"
     COMMENT = "COMMENT"
-
-
-class FailureDetail(BaseModel):
-    category: ViolationCategory
-    component: str
-    severity: SeverityLevel
-    reason: str
-    remediation: str
-
-
-class QualityGateDecision(BaseModel):
-    passed: bool
-    summary: str
-    failures: list[FailureDetail] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_failures_consistency(self) -> "QualityGateDecision":
-        if self.passed and len(self.failures) > 0:
-            raise ValueError(
-                "QualityGateDecision cannot be passed=True with non-empty failures"
-            )
-        if not self.passed and len(self.failures) == 0:
-            raise ValueError(
-                "QualityGateDecision cannot be passed=False with empty failures"
-            )
-        return self
 
 
 class InlineFinding(BaseModel):
@@ -99,7 +59,7 @@ class InlineFinding(BaseModel):
     severity: PRFindingSeverity
     title: str
     details: str
-    suggestion: str
+    suggestion: str = ""
     pii_leak: bool = False
 
 
@@ -107,49 +67,51 @@ class PRReviewReport(BaseModel):
     overall_status: ReviewStatus
     summary: str
     findings: list[InlineFinding] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def enforce_blocker_status(self) -> "PRReviewReport":
+        """Enforces REQUEST_CHANGES if any finding has BLOCKER severity or pii_leak is True."""
+        has_blocker = any(
+            f.severity == PRFindingSeverity.BLOCKER or f.pii_leak
+            for f in self.findings
+        )
+        if has_blocker and self.overall_status != ReviewStatus.REQUEST_CHANGES:
+            self.overall_status = ReviewStatus.REQUEST_CHANGES
+        return self
 ```
 
-### 2. Pure Helper Signatures
+### 2. Function Signatures
 
 ```python
 def validate_and_sanitize_findings(
     findings: list[InlineFinding],
     modified_files_diff: dict[str, list[int]],
 ) -> tuple[list[InlineFinding], list[InlineFinding]]:
-    """Separates findings into valid inline findings (where file_path exists in diff and
-    line_number is within modified hunks) and general review findings (invalid coordinates,
-    missing lines, or out-of-hunk modifications).
-    """
-    ...
-
-
-def format_text_decision(decision: QualityGateDecision) -> str:
-    """Converts QualityGateDecision into deterministic formatted text starting with
-    'GATE_PASSED' or 'GATE_FAILED' followed by summary and failure enumeration.
-    """
+    """Separates findings into valid inline findings (in diff hunks) and general findings (out of hunk / file level)."""
     ...
 
 
 def format_pr_review_text(report: PRReviewReport) -> str:
-    """Converts PRReviewReport into human-readable text summary detailing review status,
-    summary, and itemized findings with remediation suggestions.
-    """
+    """Converts PRReviewReport into human-readable text summary detailing status, summary, and itemized findings."""
     ...
-```
 
-### 3. Agent Entry Point Signatures
 
-```python
-async def evaluate_quality_gate(
-    pii_report_path: str = "reports/pii-scan.txt",
-    pr_review_path: str = "reports/pr-review.txt",
-    project_id: Optional[str] = None,
-    location: str = "us-central1",
-    pr_number: Optional[str] = None,
-) -> QualityGateDecision:
-    """Executes Quality Gate Agent using LocalAgentConfig(vertex=True, response_schema=QualityGateDecision).
-    Evaluates scan and review reports fail-closed, writing reports/gate-decision.json and
-    reports/decision.txt, and isolated telemetry to reports/telemetry/quality_gate_agent.
+def _write_pr_reports(report: PRReviewReport) -> None:
+    """Writes JSON and text review artifacts to reports/pr-review.json and reports/pr-review.txt."""
+    ...
+
+
+async def post_github_pr_review(
+    report: PRReviewReport,
+    pr_number: Union[str, int],
+    repo: str,
+    token: str,
+    modified_files_diff: Optional[dict[str, list[int]]] = None,
+) -> bool:
+    """Submits a formal GitHub Pull Request Review via GitHub REST API.
+    
+    Handles positive approvals on clean PRs, inline comment posting, and bounded 422 fallbacks.
+    Returns True if successfully posted, or False on non-fatal failure.
     """
     ...
 
@@ -162,70 +124,97 @@ async def run_pr_review(
     project_id: Optional[str] = None,
     location: str = "us-central1",
 ) -> Optional[PRReviewReport]:
-    """Executes PR Reviewer Agent using LocalAgentConfig(vertex=True, response_schema=PRReviewReport)
-    and GitHub MCP Server. Performs line-coordinate validation, submits review and comments,
-    writes reports/pr-review.json and reports/pr-review.txt, and logs telemetry to
-    reports/telemetry/pr_review_agent.
-    """
+    """Runs automated PR review evaluation, writes local reports, and posts GitHub review if credentials exist."""
+    ...
+
+
+async def main() -> None:
+    """CLI entry point resolving arguments, executing run_pr_review, and exiting 0."""
     ...
 ```
 
+### 3. Canonical Positive Approval Review Template
+
+When `report.overall_status == ReviewStatus.APPROVE` and `report.findings == []`:
+```markdown
+## ✅ Automated PR Review: APPROVED
+
+Great job! No code defects, architectural issues, or Cloud DLP security findings were detected in this pull request. All changes look clean and ready to merge.
+```
+
+### 4. GitHub REST API Review Contract
+
+- **Endpoint:** `POST https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/reviews`
+- **Headers:**
+  - `Authorization: Bearer <token>`
+  - `Accept: application/vnd.github+json`
+  - `User-Agent: automated-pr-reviewer/1.0`
+  - `X-GitHub-Api-Version: 2022-11-28`
+  - `Content-Type: application/json`
+- **Timeout:** 10 seconds socket connection and read timeout.
+- **Payload Schema:**
+  ```json
+  {
+    "body": "Markdown review text",
+    "event": "APPROVE | REQUEST_CHANGES | COMMENT",
+    "comments": [
+      {
+        "path": "file_path",
+        "line": 42,
+        "body": "**[SEVERITY] Title**\n\nDetails\n\n```suggestion\nsuggestion_code\n```"
+      }
+    ]
+  }
+  ```
+
+---
+
 ## Rules
 
-1. **Keyless Vertex AI Authentication (ADC / WIF):**
-   - Agents instantiate `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `"us-central1"`), and model `gemini-3.7-flash` configured with medium thinking budget (strictly prohibiting models below Gemini 3.5 Flash).
-   - Never accept, require, or inspect `GEMINI_API_KEY` or static service account keys in environment or configurations.
-2. **Deterministic Quality Gate Evaluation:**
-   - Zero tolerance for sensitive data: Any finding in `reports/pii-scan.txt` (or PR review with `pii_leak=True` or `severity=BLOCKER`) mandates `passed=False` with `CRITICAL` or `HIGH` severity `FailureDetail`.
-   - Invariant validation: Deserialized responses must pass `QualityGateDecision.model_validate(data)` enforcing `passed == (len(failures) == 0)`.
-3. **Fail-Closed Missing Report Safety:**
-   - If `reports/pii-scan.txt` is missing, unreadable, or 0 bytes, `evaluate_quality_gate()` evaluates `passed=False` with `category=ViolationCategory.SECURITY_VULNERABILITY`, `severity=SeverityLevel.CRITICAL`, `component="Cloud DLP"`, `reason="Required Cloud DLP scan report (reports/pii-scan.txt) is missing, unreadable, or empty"`, and `remediation="Ensure Cloud DLP scan step executes successfully before quality gate evaluation"`.
-   - On push / non-PR events (`PULL_REQUEST_NUMBER` unset), missing `reports/pr-review.txt` defaults to `"No PR review report available (push event or non-PR)."` and does not fail the gate.
-   - On active PR events (`PULL_REQUEST_NUMBER` set), missing `reports/pr-review.txt` evaluates `passed=False` with `HIGH` severity.
-   - Scripts must never raise unhandled `FileNotFoundError`.
-4. **PR Review Non-PR Early Exit:**
-   - If `PULL_REQUEST_NUMBER` is unset or empty, `pr_reviewer_agent.py` prints `"No pull request number provided; skipping PR review."` and exits immediately with status `0` without initializing LLM or Docker MCP containers.
-5. **GitHub MCP Container Execution & Coordinate Resilience:**
-   - PR Reviewer configures `types.McpStdioServer(name="github", command="docker", args=["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "-e", "GITHUB_REPOSITORY", "ghcr.io/github/github-mcp-server:v0.27.0"], env={"GITHUB_PERSONAL_ACCESS_TOKEN": token, "GITHUB_REPOSITORY": repo})`.
-   - Any finding with `severity == PRFindingSeverity.BLOCKER` or `pii_leak == True` forces `PRReviewReport.overall_status = ReviewStatus.REQUEST_CHANGES`.
-   - Inline findings must have `file_path` and `line_number` validated against modified PR diff hunks before calling inline comment tools. Findings on unparseable, `None`, or out-of-hunk lines must fall back to the top-level PR review comment body to prevent GitHub API 422 errors.
-6. **Dual-Output and Telemetry Isolation:**
-   - Quality gate script writes `reports/gate-decision.json` and `reports/decision.txt`.
-   - PR reviewer script writes `reports/pr-review.json` and `reports/pr-review.txt`.
-   - Telemetry directories are configured via `app_data_dir` to `reports/telemetry/quality_gate_agent` and `reports/telemetry/pr_review_agent`.
-   - All scripts execute `os.makedirs(..., exist_ok=True)` on parent directories before writing files.
-7. **Exit Code & Enforcement Separation:**
-   - `quality_gate_agent.py` and `pr_reviewer_agent.py` exit with return code `0` upon successfully writing report artifacts, ensuring telemetry collection and job summaries execute.
-   - The dedicated CI workflow step `Enforce Quality Gate` evaluates `reports/gate-decision.json` and exits with return code `1` if `passed != true` or the file is missing/corrupt.
+1. **Deterministic Positive Approval on Clean PRs:** When `report.overall_status == ReviewStatus.APPROVE` and `len(report.findings) == 0`, submit review with `event: "APPROVE"`, canonical positive body template, and `comments: []`.
+2. **Review Event Mapping:** Direct 1-to-1 mapping from `report.overall_status.value`: `APPROVE` -> `"APPROVE"`, `REQUEST_CHANGES` -> `"REQUEST_CHANGES"`, `COMMENT` -> `"COMMENT"`.
+3. **Diff Coordinate Sanitization & Inline Findings:** When findings exist, separate into valid inline findings and general findings using `validate_and_sanitize_findings(findings, modified_files_diff)`. Valid inline findings are formatted as comment objects; general findings are appended to the top-level review `body`.
+4. **Graceful Non-PR / Push Skip:** If `pr_number` is unset or empty, print `"No pull request number provided; skipping PR review."` and exit cleanly with code `0` without making network calls or invoking LLM.
+5. **Network Resilience & Non-Fatal Warning:** Enforce a 10-second timeout on all HTTP requests. Catch network errors, auth failures (401/403), or unexpected exceptions, log `"[Warning] Failed to post PR review to GitHub: <error_message>"`, and exit `0` without crashing CI runner.
+6. **Bounded HTTP 422 Fallback:** If initial submission containing `len(comments) > 0` returns HTTP 422, retry at most once with all findings consolidated into the top-level `body` and `comments: []`. If initial request had `comments: []` or retry fails, log warning and do not retry.
+7. **Dual-Output Artifact Generation:** Always write `reports/pr-review.json` and `reports/pr-review.txt` to disk prior to attempting review posting.
+8. **Parameter Resolution & Repository Sanitization:** Resolve parameters (`sys.argv` > primary env > fallback env), strip quotes/whitespace/`.git` from repo name, and validate `owner/repo` format (contains exactly one `/`).
+9. **Zero Findings Non-APPROVE Reviews:** If `findings == []` but `overall_status != ReviewStatus.APPROVE`, submit with `event: report.overall_status.value`, `body: report.summary`, and `comments: []`.
+10. **Async Non-Blocking Execution:** `post_github_pr_review` is an async function wrapping synchronous network requests via `asyncio.to_thread`.
+
+---
 
 ## Out of scope
 
-- Interactive CLI prompts (`input()`) or interactive terminal sessions.
-- Direct cloud resource provisioning or deployment triggers inside agent Python scripts (handled by GitHub Actions and Terraform).
-- Web UI dashboard rendering or HTML report generation (handled natively via `$GITHUB_STEP_SUMMARY` and GCS report archiving).
-- Direct Git commit execution by agent scripts.
-- Modifying core application domain models or scoring logic in `scorer/usage.py` and `scorer/main.py`.
+- Direct commit pushing or branch creation by the review agent.
+- Modifying core application business logic in `scorer/usage.py` or `scorer/main.py`.
+- Interactive prompts (`input()`) in CI/CD execution.
+- Third-party webhook notifications outside GitHub Pull Request Reviews API.
+
+---
 
 ## Decisions
 
 | ID | Rule a builder follows | Passage it resolves | Case that would differ |
 | --- | --- | --- | --- |
-| D-1 | Authenticate to GCP and Vertex AI using Workload Identity Federation (WIF) OIDC token exchange (`google-github-actions/auth@v2`) and `vertex=True` with `GOOGLE_APPLICATION_CREDENTIALS` | How agents authenticate without static credentials in CI | Attempting to pass `GEMINI_API_KEY` or static service account keys in environment or agent config |
-| D-2 | Configure `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `us-central1`), and model `gemini-3.7-flash` with medium thinking budget (minimum allowed model is Gemini 3.5 Flash) | What model provider, region settings, and thinking tier to instantiate SDK agents with | Attempting to use default local Gemini Developer API, unconfigured project ID, or legacy sub-3.5 models |
-| D-3 | `QualityGateDecision` requires `passed: bool`, `summary: str`, and `failures: list[FailureDetail]`, with invariant validator enforcing `passed == (len(failures) == 0)` | What schema determines gate pass/fail and prevents inconsistent states | Returning `passed=True` with non-empty failures, or `passed=False` with empty failures |
-| D-4 | `PRReviewReport` requires `overall_status: ReviewStatus`, `summary: str`, and `findings: list[InlineFinding]`. Any finding with `BLOCKER` or `pii_leak=True` mandates `ReviewStatus.REQUEST_CHANGES` and maps to `CRITICAL` severity in Quality Gate | How PR findings translate to PR review status and downstream quality gate failures | Returning `APPROVE` or `COMMENT` despite blocker findings or PII leaks |
-| D-5 | If `PULL_REQUEST_NUMBER` is unset or empty, `pr_reviewer_agent.py` prints message and exits 0 immediately without invoking LLM or Docker MCP server | What happens when PR review script runs during a `push` event | Script failing or hanging trying to find a non-existent PR on push events |
-| D-6 | Quality gate and PR reviewer scripts must emit both structured JSON (`reports/gate-decision.json`, `reports/pr-review.json`) and human-readable formatted text (`reports/decision.txt`, `reports/pr-review.txt`) | How output is formatted for both automated verification and log inspection | Emitting only JSON (breaking text display steps) or only text (breaking typed validation) |
-| D-7 | If `reports/pii-scan.txt` is missing, unreadable, or 0 bytes, evaluate `passed=False` with CRITICAL severity. If `reports/pr-review.txt` is missing on push events, use fallback text; on active PR events, evaluate `passed=False`. Scripts never throw `FileNotFoundError` | How missing or corrupted input scan files are handled | Script crashing with `FileNotFoundError` or silently passing when DLP scan was skipped |
-| D-8 | Standardize CI runner on `actions/setup-python@v5` (Python 3.11) with `pip install google-antigravity "pydantic>=2.0.0,<3.0.0"`, removing legacy `curl \| bash` `agy` CLI installation | How CI runner installs and manages agent dependencies | Downloading and caching binary `agy` CLI in workflow |
-| D-9 | `quality_gate_agent.py` exits with status `0` upon generating reports; downstream step `Enforce Quality Gate` parses `reports/gate-decision.json` and exits `1` if `passed != true` | When and where CI pipeline halts on quality gate failure | Script exiting `1` prematurely, skipping GCS telemetry upload and job summary generation |
-| D-10 | Isolate telemetry directories to `reports/telemetry/quality_gate_agent` and `reports/telemetry/pr_review_agent` via `app_data_dir` in `LocalAgentConfig`, archived to GCS bucket `gs://${PROJECT}-scan-reports/${RUN_ID}_${RUN_ATTEMPT}` | How agent telemetry and session logs are isolated and archived | Telemetry files overwriting each other in a shared directory or remaining unarchived |
-| D-11 | Launch GitHub MCP container `ghcr.io/github/github-mcp-server:v0.27.0` via `docker run -i --rm` injecting `GITHUB_PERSONAL_ACCESS_TOKEN` from `GH_TOKEN` and `GITHUB_REPOSITORY` | How the PR reviewer agent connects to GitHub MCP server | Missing `-i` flag (breaking stdio JSON-RPC) or missing environment variables |
-| D-12 | Validate `file_path` and `line_number` against PR diff hunks before calling inline comment tools; append findings with invalid coordinates to top-level review comment body | How findings on untouched lines or unparseable line numbers are commented | GitHub API throwing 422 Unprocessable Entity when creating review comments on invalid lines |
+| **D-1** | When `overall_status == ReviewStatus.APPROVE` and `findings == []`, submit GitHub PR Review with `event: "APPROVE"` and canonical positive markdown body acknowledging clean diffs and zero DLP findings | How clean PRs with no findings are reviewed and approved | Submitting a generic comment, leaving no review, or failing to approve clean PRs |
+| **D-2** | Map review event directly from `report.overall_status.value`: `APPROVE` -> `"APPROVE"`, `REQUEST_CHANGES` -> `"REQUEST_CHANGES"`, `COMMENT` -> `"COMMENT"`. BLOCKER or PII leak coerces `REQUEST_CHANGES` | How review status translates to GitHub Review API event | Posting COMMENT when BLOCKER or PII leak requires REQUEST_CHANGES |
+| **D-3** | Pass `modified_files_diff: dict[str, list[int]]` into `validate_and_sanitize_findings()` to separate valid diff lines from out-of-hunk findings. Out-of-hunk findings are formatted in top-level `body` | How line coordinates are sanitized before sending inline review comments | GitHub API rejecting entire review payload with 422 due to out-of-hunk line coordinates |
+| **D-4** | Exit `0` immediately when `PULL_REQUEST_NUMBER` is missing or empty without calling GitHub APIs or LLM | How push events and non-PR workflow runs are handled | Review script crashing or attempting API calls on push events |
+| **D-5** | Catch HTTP and connection errors during GitHub review posting with 10s timeout, log non-fatal warnings, and do not fail the CI process | How network failures, token permission errors, or timeouts are handled | CI runner failing and halting deployment due to non-critical review posting errors |
+| **D-6** | If review submission fails with HTTP 422 and `len(comments) > 0`, retry at most once with all findings in `body` and `comments: []`. If comments was already empty or retry fails, log warning and skip further retries | How GitHub API 422 Unprocessable Entity errors are handled | Review submission failing completely due to minor diff line number drift or author self-review |
+| **D-7** | Ensure `reports/pr-review.json` and `reports/pr-review.txt` are always written to disk before submitting the review | Order of local report generation vs GitHub API call | Missing local artifacts if GitHub API call fails or times out |
+| **D-8** | Resolve non-empty parameters (`sys.argv` > primary env var > fallback env var) and validate `owner/repo` format | Priority of CLI arguments vs environment variables and repository name validation | CLI overrides being ignored or malformed repo strings causing unhandled URL errors |
+| **D-9** | When `findings == []` but `overall_status != ReviewStatus.APPROVE`, submit with `event: overall_status.value`, `body: report.summary`, and `comments: []` | How zero-finding reports with non-APPROVE status are formatted | Posting positive approval text on a rejected or commented review |
+| **D-10** | Define `async def post_github_pr_review(...) -> bool` called within `run_pr_review()` following artifact persistence using `asyncio.to_thread` | How review posting is integrated into the async execution flow | Blocking async event loop with synchronous socket operations or uncalled review posting |
+
+---
 
 ## Open questions
 
 None.
+
+---
 
 ## The gate
 

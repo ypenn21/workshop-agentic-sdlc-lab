@@ -12,6 +12,11 @@
   - *Spec:* `plans/active_milestones/ci-cd-agy-sdk-migration/spec.md`
   - *Plan:* `plans/active_milestones/ci-cd-agy-sdk-migration/plan.md`
   - *Audit:* `plans/active_milestones/ci-cd-agy-sdk-migration/audit.md`
+- [ ] **Milestone: Automated PR Review Comment Posting & Positive Feedback** - STATUS: ACTIVE
+  - *Description:* Submit formal GitHub PR reviews via REST API / MCP; post positive encouraging approval reviews when clean and line-level inline/summary comments when findings exist.
+  - *Context:* `plans/active_milestones/pr-review-comment-posting/context.md`
+  - *Spec:* `plans/active_milestones/pr-review-comment-posting/spec.md`
+  - *Plan:* `plans/active_milestones/pr-review-comment-posting/plan.md`
 
 ## 📦 Release v1.1.0 (Target Date: 2026-10-01) - STATUS: PENDING
 - [ ] **Milestone 2: Automated Slack/Email Alerting on AT RISK Accounts** - STATUS: PENDING
