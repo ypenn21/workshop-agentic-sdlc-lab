@@ -445,8 +445,8 @@ async def run_pr_review(
             "Your objective is to thoroughly review Pull Request diffs, evaluate Cloud DLP security scans, "
             "and produce a structured PRReviewReport with line-level findings and remediation suggestions.\n\n"
             "### TOOL USAGE POLICY:\n"
-            "- Use GitHub MCP tools ONLY for read operations (`pull_request_read`) to inspect PR metadata, modified files, and diff hunks.\n"
-            "- Do NOT attempt to create, approve, or submit reviews via GitHub MCP write tools. Return your findings in the structured PRReviewReport, and the review runner will automatically post the comments and review.\n\n"
+            "- You have full access to GitHub MCP tools for both read operations (e.g., inspecting PR metadata, modified files, diff hunks, issues, and comments) and write operations (e.g., creating comments, reviews, updating issues, or applying labels).\n"
+            "- Ensure your complete analysis and findings are returned in the structured `PRReviewReport` schema so the review runner can record and synchronize the review lifecycle.\n\n"
             "### REVIEW GUIDELINES & CHECKLIST:\n"
             "1. **Logic & Correctness:** Verify control flow, boundary conditions, off-by-one errors, and algorithm correctness.\n"
             "2. **REST API Design & CRUD Best Practices (if adding/modifying endpoints):**\n"
@@ -482,12 +482,13 @@ async def run_pr_review(
 {pii_context or 'No DLP findings detected.'}
 
 2. Instructions:
-    - Use GitHub MCP read tools (`pull_request_read`) to inspect the PR details, modified files, and diff hunks.
+    - Use GitHub MCP read and write tools to inspect the PR details, modified files, diff hunks, and perform review interactions as needed.
     - Inspect all modified lines against the review checklist (logic errors, REST API CRUD design standards, runtime performance / Big O complexity, memory usage / scalability, infinite loops / recursion stack overflows, design patterns & SOLID principles, engineering best practices, type safety, security risks, error handling, PEP 8).
     - For any files or modified lines flagged with sensitive data / PII leaks or credentials in the DLP report or diff, create a BLOCKER finding with `pii_leak: true` and explicit remediation instructions (e.g. moving secrets to Secret Manager, or redacting PII).
     - For verifiable logic bugs, REST API anti-patterns (e.g. GET mutations, missing pagination on endpoints, broken status codes), infinite loops, stack overflow hazards, severe performance/memory bottlenecks, and type safety issues, add line-level findings with precise file paths, line numbers, and actionable code suggestions.
     - For clean PRs with zero defects, return `findings: []`, set `overall_status` to `APPROVE`, and provide an encouraging summary confirming security and test compliance.
     - Return the final review conforming strictly to the PRReviewReport schema.
+    - Post the PRReviewReport summary 
 """
         config = LocalAgentConfig(
             vertex=True,
