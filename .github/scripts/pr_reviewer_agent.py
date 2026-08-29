@@ -151,10 +151,10 @@ async def post_github_pr_review(
     comments: list[dict[str, Any]] = []
 
     if not report.findings:
-        if report.overall_status == ReviewStatus.APPROVE:
-            body = POSITIVE_APPROVAL_TEMPLATE
-        else:
-            body = report.summary
+        # if report.overall_status == ReviewStatus.APPROVE:
+        #     body = POSITIVE_APPROVAL_TEMPLATE
+        # else:
+        body = report.summary
     else:
         inline_findings, general_findings = validate_and_sanitize_findings(
             report.findings, modified_files_diff or {}
@@ -488,7 +488,7 @@ async def run_pr_review(
     - For verifiable logic bugs, REST API anti-patterns (e.g. GET mutations, missing pagination on endpoints, broken status codes), infinite loops, stack overflow hazards, severe performance/memory bottlenecks, and type safety issues, add line-level findings with precise file paths, line numbers, and actionable code suggestions.
     - For clean PRs with zero defects, return `findings: []`, set `overall_status` to `APPROVE`, and provide an encouraging summary confirming security and test compliance.
     - Return the final review conforming strictly to the PRReviewReport schema.
-    - Post the PRReviewReport summary 
+    - Post the PRReviewReport summary as an comment.
 """
         config = LocalAgentConfig(
             vertex=True,
