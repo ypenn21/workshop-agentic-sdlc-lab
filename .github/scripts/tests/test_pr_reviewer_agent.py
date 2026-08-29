@@ -1,40 +1,31 @@
 """Acceptance and Contract Tests for PR Reviewer Agent.
 
-Cites Decisions from docs/spec.md (D-4, D-5, D-6, D-11, D-12).
+Cites Decisions from docs/spec.md (D-2, D-4, D-5, D-6, D-10, D-11, D-12).
 """
 
 import os
+import sys
+import json
 import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
 from pydantic import ValidationError
 
-# Support importing from either .github.scripts or scripts.ci
-try:
-    from .github.scripts.pr_reviewer_agent import (
-        PRFindingSeverity,
-        ReviewSeverity,
-        ReviewStatus,
-        InlineFinding,
-        PRReviewReport,
-        validate_and_sanitize_findings,
-        format_pr_review_text,
-        run_pr_review,
-    )
-except ImportError:
-    import importlib.util
-    import sys
-    spec_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pr_reviewer_agent.py"))
-    spec = importlib.util.spec_from_file_location("pr_reviewer_agent", spec_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["pr_reviewer_agent"] = module
-    spec.loader.exec_module(module)
-    PRFindingSeverity = module.PRFindingSeverity
-    ReviewSeverity = module.ReviewSeverity
-    ReviewStatus = module.ReviewStatus
-    InlineFinding = module.InlineFinding
-    PRReviewReport = module.PRReviewReport
-    validate_and_sanitize_findings = module.validate_and_sanitize_findings
-    format_pr_review_text = module.format_pr_review_text
-    run_pr_review = module.run_pr_review
+# Ensure .github/scripts is on sys.path for direct module import
+_scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+
+import pr_reviewer_agent
+from pr_reviewer_agent import (
+    PRFindingSeverity,
+    ReviewSeverity,
+    ReviewStatus,
+    InlineFinding,
+    PRReviewReport,
+    validate_and_sanitize_findings,
+    format_pr_review_text,
+    run_pr_review,
+)
 
 
 def test_pr_finding_severity_alias_compatibility():
@@ -44,6 +35,29 @@ def test_pr_finding_severity_alias_compatibility():
     assert PRFindingSeverity.WARNING.value == "WARNING"  # D-4
     assert PRFindingSeverity.SUGGESTION.value == "SUGGESTION"  # D-4
     assert PRFindingSeverity.INFO.value == "INFO"  # D-4
+
+
+def test_review_status_enum_values():
+    """Validates that ReviewStatus enum contains expected values."""
+    assert ReviewStatus.APPROVE.value == "APPROVE"  # D-4
+    assert ReviewStatus.REQUEST_CHANGES.value == "REQUEST_CHANGES"  # D-4
+    assert ReviewStatus.COMMENT.value == "COMMENT"  # D-4
+
+
+def test_inline_finding_schema_and_defaults():
+    """Validates InlineFinding instantiation and default field values."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",  # D-4
+        line_number=15,  # D-4
+        severity=PRFindingSeverity.WARNING,  # D-4
+        title="Missing type annotation",  # D-4
+        details="Function parameter lacks type hint.",  # D-4
+    )
+    assert finding.file_path == "scorer/usage.py"  # D-4
+    assert finding.line_number == 15  # D-4
+    assert finding.severity == PRFindingSeverity.WARNING  # D-4
+    assert finding.suggestion == ""  # D-4: default empty string
+    assert finding.pii_leak is False  # D-4: default False
 
 
 def test_pr_review_report_schema_approve():
@@ -78,8 +92,44 @@ def test_pr_review_report_schema_request_changes():
     assert report.findings[0].severity == PRFindingSeverity.BLOCKER  # D-4
 
 
+def test_pr_review_report_invariant_blocker_enforces_request_changes():
+    """Invariant: if any finding has BLOCKER severity, overall_status is coerced to REQUEST_CHANGES."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=10,
+        severity=PRFindingSeverity.BLOCKER,  # D-4
+        title="Fatal issue",
+        details="Critical error.",
+    )
+    report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,  # D-4: initially passed APPROVE
+        summary="Initial review summary",
+        findings=[finding],
+    )
+    assert report.overall_status == ReviewStatus.REQUEST_CHANGES  # D-4: enforced
+
+
+def test_pr_review_report_invariant_pii_leak_enforces_request_changes():
+    """Invariant: if any finding has pii_leak=True, overall_status is coerced to REQUEST_CHANGES."""
+    finding = InlineFinding(
+        file_path="config/keys.py",
+        line_number=1,
+        severity=PRFindingSeverity.WARNING,
+        title="Key leak",
+        details="Secret exposed.",
+        pii_leak=True,  # D-4
+    )
+    report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,  # D-4: initially passed APPROVE
+        summary="Initial review summary",
+        findings=[finding],
+    )
+    assert report.overall_status == ReviewStatus.REQUEST_CHANGES  # D-4: enforced
+
+
 def test_validate_and_sanitize_findings_separates_inline_and_general():
     """Separates findings with valid diff line coordinates from invalid/out-of-hunk ones."""
+    # Modified files diff mockup: scorer/usage.py has modified lines [10, 11, 12, 40, 41, 42]
     diff_hunks = {
         "scorer/usage.py": [10, 11, 12, 40, 41, 42],  # D-12
         "scripts/ci/agent.py": [1, 2, 3],  # D-12
@@ -166,3 +216,89 @@ async def test_run_pr_review_non_pr_event_early_exit():
         token="mock-token",
     )
     assert result is None  # D-5: Early exit without calling LLM or Docker
+
+
+@pytest.mark.asyncio
+async def test_run_pr_review_mock_agent_approve(tmp_path, monkeypatch):
+    """Scenario: Mocked Antigravity Agent returns clean APPROVE PR review."""
+    monkeypatch.chdir(tmp_path)
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    pii_scan = reports_dir / "pii-scan.txt"
+    pii_scan.write_text("No findings", encoding="utf-8")
+
+    expected_report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="All PR changes look clean and well-structured.",
+        findings=[],
+    )
+
+    mock_response = MagicMock()
+    mock_response.structured_output = AsyncMock(return_value=expected_report)
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent_instance):
+        report = await run_pr_review(
+            pr_number="123",  # D-5
+            repo="owner/repo",
+            token="ghp_testtoken",
+            pii_report_path=str(pii_scan),
+            project_id="test-project",
+            location="us-central1",
+        )
+
+    assert report is not None  # D-5
+    assert report.overall_status == ReviewStatus.APPROVE  # D-4
+    assert os.path.exists("reports/pr-review.json")  # D-6
+    assert os.path.exists("reports/pr-review.txt")  # D-6
+    with open("reports/pr-review.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+        assert data["overall_status"] == "APPROVE"  # D-4, D-6
+
+
+@pytest.mark.asyncio
+async def test_run_pr_review_mock_agent_config_and_telemetry(tmp_path, monkeypatch):
+    """Validates LocalAgentConfig parameters, MCP server setup, and telemetry dir."""
+    monkeypatch.chdir(tmp_path)
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    expected_report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="PR approved.",
+        findings=[],
+    )
+
+    mock_response = MagicMock()
+    mock_response.structured_output = AsyncMock(return_value=expected_report)
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent_instance) as mock_agent_cls:
+        await run_pr_review(
+            pr_number="99",
+            repo="my-org/my-repo",
+            token="test-token",
+            pii_report_path=str(reports_dir / "pii-scan.txt"),
+            project_id="test-proj",
+            location="us-central1",
+        )
+
+        mock_agent_cls.assert_called_once()
+        captured_config = mock_agent_cls.call_args[0][0]
+
+    assert captured_config is not None
+    assert captured_config.model == "gemini-3.7-flash"  # D-2
+    assert captured_config.vertex is True  # D-2
+    assert captured_config.project == "test-proj"  # D-2
+    assert len(captured_config.mcp_servers) == 1  # D-11
+    mcp = captured_config.mcp_servers[0]
+    assert mcp.command == "docker"  # D-11
+    assert "ghcr.io/github/github-mcp-server:v0.27.0" in mcp.args  # D-11
+    assert os.path.isdir("reports/telemetry/pr_review_agent")  # D-10

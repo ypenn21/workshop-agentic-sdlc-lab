@@ -11,7 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Union, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from google.antigravity import Agent, LocalAgentConfig, types
 
 
 class PRFindingSeverity(str, Enum):
@@ -21,6 +22,7 @@ class PRFindingSeverity(str, Enum):
     INFO = "INFO"
 
 
+# Alias for backward compatibility (Decision D-4)
 ReviewSeverity = PRFindingSeverity
 
 
@@ -36,7 +38,7 @@ class InlineFinding(BaseModel):
     severity: PRFindingSeverity
     title: str
     details: str
-    suggestion: str
+    suggestion: str = ""
     pii_leak: bool = False
 
 
@@ -44,6 +46,17 @@ class PRReviewReport(BaseModel):
     overall_status: ReviewStatus
     summary: str
     findings: list[InlineFinding] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def enforce_blocker_status(self) -> "PRReviewReport":
+        """If any finding is a BLOCKER or contains a pii_leak, enforce REQUEST_CHANGES (Decision D-4)."""
+        has_blocker = any(
+            f.severity == PRFindingSeverity.BLOCKER or f.pii_leak
+            for f in self.findings
+        )
+        if has_blocker and self.overall_status != ReviewStatus.REQUEST_CHANGES:
+            self.overall_status = ReviewStatus.REQUEST_CHANGES
+        return self
 
 
 def validate_and_sanitize_findings(
@@ -142,7 +155,8 @@ async def run_pr_review(
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", location)
 
     os.makedirs("reports", exist_ok=True)
-    os.makedirs("reports/telemetry/pr_review_agent", exist_ok=True)
+    telemetry_dir = os.path.abspath("reports/telemetry/pr_review_agent")
+    os.makedirs(telemetry_dir, exist_ok=True)
 
     pii_context = ""
     if os.path.exists(pii_report_path):
@@ -150,9 +164,6 @@ async def run_pr_review(
 
     # Try invoking live Antigravity SDK + GitHub MCP
     try:
-        from google import antigravity  # type: ignore
-        from google.antigravity import LocalAgentConfig, types  # type: ignore
-
         mcp_server = types.McpStdioServer(
             name="github",
             command="docker",
@@ -167,8 +178,8 @@ async def run_pr_review(
                 "ghcr.io/github/github-mcp-server:v0.27.0",
             ],
             env={
-                "GITHUB_PERSONAL_ACCESS_TOKEN": token,
-                "GITHUB_REPOSITORY": repo,
+                "GITHUB_PERSONAL_ACCESS_TOKEN": token or "",
+                "GITHUB_REPOSITORY": repo or "",
             },
         )
 
@@ -186,16 +197,28 @@ Return a structured PRReviewReport.
             vertex=True,
             project=project_id,
             location=location,
-            model="gemini-2.5-flash",
+            model="gemini-3.7-flash",
             response_schema=PRReviewReport,
             mcp_servers=[mcp_server],
-            app_data_dir="reports/telemetry/pr_review_agent",
+            app_data_dir=telemetry_dir,
+            system_instructions=(
+                "You are an expert PR Code Reviewer and Security Auditor. "
+                "Review pull request changes and diffs, check for security and PII leaks, "
+                "and post structured findings with line numbers and remediation suggestions."
+            ),
         )
-        agent = antigravity.Agent(config=config)
-        response = await agent.chat(prompt)
-        raw_output = await response.structured_output()
-        if raw_output:
-            report = PRReviewReport.model_validate(raw_output)
+        async with Agent(config) as agent:
+            response = await agent.chat(prompt)
+            raw_output = await response.structured_output()
+            if isinstance(raw_output, PRReviewReport):
+                report = raw_output
+            elif isinstance(raw_output, dict):
+                report = PRReviewReport.model_validate(raw_output)
+            elif isinstance(raw_output, str):
+                report = PRReviewReport.model_validate_json(raw_output)
+            else:
+                report = PRReviewReport.model_validate(raw_output)
+
             _write_pr_reports(report)
             return report
     except Exception:
@@ -254,6 +277,7 @@ async def main() -> None:
     if report:
         print(f"PR Review Status: {report.overall_status.value}")
         print(f"Summary: {report.summary}")
+    # Always exit 0 on completion
     sys.exit(0)
 
 

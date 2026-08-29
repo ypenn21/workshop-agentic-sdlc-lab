@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, Union, Any
 
 from pydantic import BaseModel, Field, model_validator
+from google.antigravity import Agent, LocalAgentConfig
 
 
 class SeverityLevel(str, Enum):
@@ -56,21 +57,22 @@ class QualityGateDecision(BaseModel):
 
 
 def format_text_decision(decision: QualityGateDecision) -> str:
-    """Converts QualityGateDecision into deterministic formatted text."""
-    lines: list[str] = []
+    """Converts QualityGateDecision into deterministic formatted text starting with
+    'GATE_PASSED' or 'GATE_FAILED' followed by summary and failure enumeration.
+    """
     if decision.passed:
-        lines.append("GATE_PASSED\n")
-        lines.append(f"Summary: {decision.summary}")
-    else:
-        lines.append("GATE_FAILED\n")
-        lines.append(f"Summary: {decision.summary}\n")
-        lines.append("Violations:")
-        for idx, failure in enumerate(decision.failures, 1):
-            lines.append(
-                f"{idx}. [{failure.severity.value}] {failure.category.value} in {failure.component}"
-            )
-            lines.append(f"   Reason: {failure.reason}")
-            lines.append(f"   Remediation: {failure.remediation}")
+        return f"GATE_PASSED\n\n{decision.summary}"
+
+    lines: list[str] = [
+        "GATE_FAILED\n",
+        f"Summary: {decision.summary}\n",
+        "Failures Detected:",
+    ]
+    for idx, failure in enumerate(decision.failures, 1):
+        lines.append(
+            f"{idx}. [{failure.severity.value}] {failure.category.value} in {failure.component}: {failure.reason}"
+        )
+        lines.append(f"   Remediation: {failure.remediation}")
     return "\n".join(lines)
 
 
@@ -80,11 +82,13 @@ async def evaluate_quality_gate(
     project_id: Optional[str] = None,
     location: str = "us-central1",
     pr_number: Optional[str] = None,
+    enforce: bool = False,
 ) -> QualityGateDecision:
     """Evaluates combined scan and review reports against release criteria.
 
     Enforces fail-closed evaluation on missing DLP scans and outputs both
-    reports/gate-decision.json and reports/decision.txt.
+    reports/gate-decision.json and reports/decision.txt, while logging telemetry
+    to reports/telemetry/quality_gate_agent.
     """
     project_id = (
         project_id
@@ -97,13 +101,14 @@ async def evaluate_quality_gate(
         pr_number = os.environ.get("PULL_REQUEST_NUMBER") or os.environ.get("PR_NUMBER")
 
     os.makedirs("reports", exist_ok=True)
-    os.makedirs("reports/telemetry/quality_gate_agent", exist_ok=True)
+    telemetry_dir = os.path.abspath("reports/telemetry/quality_gate_agent")
+    os.makedirs(telemetry_dir, exist_ok=True)
 
     # 1. Fail-Closed Check on Cloud DLP Scan Report (Decision D-7)
     if not os.path.exists(pii_report_path) or os.path.getsize(pii_report_path) == 0:
         decision = QualityGateDecision(
             passed=False,
-            summary="Quality gate failed: Required Cloud DLP scan report (reports/pii-scan.txt) is missing, unreadable, or empty.",
+            summary="Quality Gate Failed: Required Cloud DLP scan report is missing, unreadable, or empty.",
             failures=[
                 FailureDetail(
                     category=ViolationCategory.SECURITY_VULNERABILITY,
@@ -145,7 +150,6 @@ async def evaluate_quality_gate(
         pr_review_content = Path(pr_review_path).read_text(encoding="utf-8")
 
     # 3. Analyze contents for violations
-    # Check for PII / Credential leaks or blocker findings
     pii_has_violations = (
         "PII finding" in pii_content
         or "AUTH_TOKEN" in pii_content
@@ -185,11 +189,8 @@ async def evaluate_quality_gate(
             )
         )
 
-    # Attempt to invoke Antigravity SDK if available and live credentials exist
+    # 4. Attempt to invoke Antigravity SDK Agent
     try:
-        from google import antigravity  # type: ignore
-        from google.antigravity import LocalAgentConfig  # type: ignore
-
         prompt = f"""You are the Quality Gate Decision Agent.
 Evaluate the following security scans and PR code review outputs:
 
@@ -207,19 +208,33 @@ Return a structured QualityGateDecision response.
             vertex=True,
             project=project_id,
             location=location,
-            model="gemini-2.5-flash",
+            model="gemini-3.7-flash",
             response_schema=QualityGateDecision,
-            app_data_dir="reports/telemetry/quality_gate_agent",
+            app_data_dir=telemetry_dir,
+            system_instructions=(
+                "You are a Lead Release Engineer and Security Gatekeeper. "
+                "Evaluate combined DLP and PR code review reports against release criteria.\n"
+                "Quality Gate Criteria:\n"
+                "1. ZERO PII, credential, or authentication token leaks detected by Cloud DLP.\n"
+                "2. PR Code Review contains no unresolved blocking architectural or critical security failures."
+            ),
         )
-        agent = antigravity.Agent(config=config)
-        response = await agent.chat(prompt)
-        raw_output = await response.structured_output()
-        if raw_output:
-            decision = QualityGateDecision.model_validate(raw_output)
+        async with Agent(config) as agent:
+            response = await agent.chat(prompt)
+            raw_output = await response.structured_output()
+            if isinstance(raw_output, QualityGateDecision):
+                decision = raw_output
+            elif isinstance(raw_output, dict):
+                decision = QualityGateDecision.model_validate(raw_output)
+            elif isinstance(raw_output, str):
+                decision = QualityGateDecision.model_validate_json(raw_output)
+            else:
+                decision = QualityGateDecision.model_validate(raw_output)
+
             _write_reports(decision)
             return decision
     except Exception:
-        # Fallback to deterministic static evaluation
+        # Fallback to deterministic evaluation
         pass
 
     if failures:
