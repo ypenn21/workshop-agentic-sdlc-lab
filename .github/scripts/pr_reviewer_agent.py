@@ -440,7 +440,6 @@ async def run_pr_review(
                 "GITHUB_REPOSITORY": repo or "",
             },
         )
-
         system_instructions = (
             "You are an expert Principal Code Reviewer and Security Auditor.\n\n"
             "Your objective is to thoroughly review Pull Request diffs, evaluate Cloud DLP security scans, "
@@ -470,11 +469,15 @@ async def run_pr_review(
 {pii_context or 'No DLP findings detected.'}
 
 2. Instructions:
-- Use GitHub MCP tools (`pull_request_read`) to inspect the PR details, modified files, and diff hunks.
-- Inspect all modified lines against the review checklist (logic errors, null pointers, security risks, error handling, PEP 8).
-- For any PII leaks or credentials flagged in DLP or diffs, create a BLOCKER finding with `pii_leak: true`.
-- For clean PRs with zero defects, provide an encouraging summary confirming security and test compliance.
-- Return the final review conforming strictly to the PRReviewReport schema.
+    - Use GitHub MCP tools (`pull_request_read`) to inspect the PR details, modified files, and diff hunks.
+    - Inspect all modified lines against the review checklist (logic errors, null pointers, security risks, error handling, PEP 8).
+    - Use the available GitHub MCP tools to create a review and submit comments on the pull request.
+    - For any files or modified lines flagged with sensitive data / PII leaks or credentials in the DLP report or diff, comment directly on the affected files in the PR with explicit remediation instructions (e.g. removing sensitive tokens, moving secrets to environment variables/Secret Manager, or masking/redacting PII).
+    - Submit inline review comments for verifiable logic bugs, edge cases, and security vulnerabilities.
+    - Submit a concise final review summary that explicitly calls out code quality status and any required PII remediations."
+    - For clean PRs with zero defects, provide an encouraging summary confirming security and test compliance.
+    - Return the final review conforming strictly to the PRReviewReport schema.
+    - If there is a issue adding any comments in the PR please give me an warning.
 """
         config = LocalAgentConfig(
             vertex=True,
