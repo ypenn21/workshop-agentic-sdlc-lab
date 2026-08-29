@@ -64,6 +64,7 @@ async def main():
         vertex=True,
         project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
         location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        model="gemini-3.7-flash",
         response_schema=PRReviewReport,
     )
 
@@ -123,6 +124,7 @@ async def main():
         vertex=True,
         project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
         location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        model="gemini-3.7-flash",
         response_schema=QualityGateDecision,
     )
 

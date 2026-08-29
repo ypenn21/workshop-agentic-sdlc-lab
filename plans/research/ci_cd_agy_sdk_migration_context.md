@@ -8,10 +8,11 @@ The user requested the creation and implementation of the Antigravity Python SDK
    - Replace one-shot CLI commands (`agy -p ...`) in CI with typed, maintainable Python scripts.
 2. **Type-Safe Pydantic Quality Gate (`.github/scripts/quality_gate_agent.py`)**:
    - Parse Cloud DLP scan findings (`reports/pii-scan.txt`) and PR review reports (`reports/pr-review.txt`).
-   - Use `LocalAgentConfig(vertex=True, project=..., location=..., response_schema=QualityGateDecision)`.
+   - Use `LocalAgentConfig(vertex=True, project=..., location=..., model="gemini-3.7-flash", response_schema=QualityGateDecision)` (configured with medium thinking budget; minimum Gemini 3.5 Flash).
    - Output deterministic typed JSON (`reports/gate-decision.json`) and formatted summary (`reports/decision.txt`).
 3. **Automated PR Reviewer Agent (`.github/scripts/pr_reviewer_agent.py`)**:
    - Integrate GitHub MCP server via `types.McpStdioServer` running `ghcr.io/github/github-mcp-server:v0.27.0`.
+   - Configure `LocalAgentConfig` with `model="gemini-3.7-flash"` (medium thinking budget).
    - Enforce Pydantic schema `PRReviewReport` (with `InlineFinding`, `ReviewSeverity`).
    - Save `reports/pr-review.json` and `reports/pr-review.txt`.
 4. **Keyless Google Cloud ADC Authentication**:

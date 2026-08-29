@@ -81,7 +81,7 @@ The specification has solid structural foundations and clear intent, but contain
 | `missing-api-timeout-and-network-error-behavior` | 🟠 medium | `<MISSING>` | No timeout, retry, or exception handling specified for Vertex AI API / MCP calls during transient network outages. |
 | `unstructured-text-input-to-quality-gate` | 🟠 medium | Scenario 1, Scenario 2 | Quality Gate ingests freeform text files instead of typed JSON (`reports/pr-review.json`), preserving prompt hallucination risks. |
 | `severity-level-pass-fail-contradiction` | 🟠 medium | Scenario 1 | Non-blocking warnings (`MEDIUM`/`LOW`) cannot be recorded in `failures` without forcing `passed = False`; suggests a `warnings` field. |
-| `model-name-and-api-error-handling-missing` | 🟠 medium | `<MISSING>` | Specification does not fix or parametrize the Gemini model name (e.g. `gemini-2.5-flash`). |
+| `model-name-and-api-error-handling-missing` | 🟠 medium | `<MISSING>` | Specification does not fix or parametrize the Gemini model name (e.g. `gemini-3.7-flash` with medium thinking budget; minimum Gemini 3.5 Flash). |
 | `missing-gh-token-behavior-unspecified` | 🟠 medium | Scenario 5, Scenario 6 | Undefined behavior if `PULL_REQUEST_NUMBER` is set (e.g., fork PR) but `GH_TOKEN` is missing or empty. |
 | `text-output-format-unspecified` | 🟡 low | Scenario 1, Scenario 5 | Exact line formatting and delimiters for `reports/decision.txt` and `reports/pr-review.txt` are not standardized in a template. |
 | `reports-directory-creation-unspecified` | 🟡 low | Constraints 3 & 4 | Missing explicit requirement to call `os.makedirs("reports", exist_ok=True)` before opening report files. |

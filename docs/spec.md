@@ -173,7 +173,7 @@ async def run_pr_review(
 ## Rules
 
 1. **Keyless Vertex AI Authentication (ADC / WIF):**
-   - Agents instantiate `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `"us-central1"`), and model `gemini-2.5-flash`.
+   - Agents instantiate `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `"us-central1"`), and model `gemini-3.7-flash` configured with medium thinking budget (strictly prohibiting models below Gemini 3.5 Flash).
    - Never accept, require, or inspect `GEMINI_API_KEY` or static service account keys in environment or configurations.
 2. **Deterministic Quality Gate Evaluation:**
    - Zero tolerance for sensitive data: Any finding in `reports/pii-scan.txt` (or PR review with `pii_leak=True` or `severity=BLOCKER`) mandates `passed=False` with `CRITICAL` or `HIGH` severity `FailureDetail`.
@@ -211,7 +211,7 @@ async def run_pr_review(
 | ID | Rule a builder follows | Passage it resolves | Case that would differ |
 | --- | --- | --- | --- |
 | D-1 | Authenticate to GCP and Vertex AI using Workload Identity Federation (WIF) OIDC token exchange (`google-github-actions/auth@v2`) and `vertex=True` with `GOOGLE_APPLICATION_CREDENTIALS` | How agents authenticate without static credentials in CI | Attempting to pass `GEMINI_API_KEY` or static service account keys in environment or agent config |
-| D-2 | Configure `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `us-central1`), and model `gemini-2.5-flash` | What model provider and region settings to instantiate SDK agents with | Attempting to use default local Gemini Developer API or unconfigured project ID |
+| D-2 | Configure `LocalAgentConfig` with `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` (default `us-central1`), and model `gemini-3.7-flash` with medium thinking budget (minimum allowed model is Gemini 3.5 Flash) | What model provider, region settings, and thinking tier to instantiate SDK agents with | Attempting to use default local Gemini Developer API, unconfigured project ID, or legacy sub-3.5 models |
 | D-3 | `QualityGateDecision` requires `passed: bool`, `summary: str`, and `failures: list[FailureDetail]`, with invariant validator enforcing `passed == (len(failures) == 0)` | What schema determines gate pass/fail and prevents inconsistent states | Returning `passed=True` with non-empty failures, or `passed=False` with empty failures |
 | D-4 | `PRReviewReport` requires `overall_status: ReviewStatus`, `summary: str`, and `findings: list[InlineFinding]`. Any finding with `BLOCKER` or `pii_leak=True` mandates `ReviewStatus.REQUEST_CHANGES` and maps to `CRITICAL` severity in Quality Gate | How PR findings translate to PR review status and downstream quality gate failures | Returning `APPROVE` or `COMMENT` despite blocker findings or PII leaks |
 | D-5 | If `PULL_REQUEST_NUMBER` is unset or empty, `pr_reviewer_agent.py` prints message and exits 0 immediately without invoking LLM or Docker MCP server | What happens when PR review script runs during a `push` event | Script failing or hanging trying to find a non-existent PR on push events |

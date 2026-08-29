@@ -147,7 +147,7 @@ sequenceDiagram
   - **Given** the workflow execution triggered on `push` to `main` or `pull_request`
   - **When** step `Authenticate to Google Cloud (WIF)` runs
   - **Then** it MUST use `google-github-actions/auth@v2` with `workload_identity_provider` and `service_account`
-  - **And** all Python agent steps MUST execute with `vertex=True` and environment variables `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (defaulting to model `gemini-2.5-flash`)
+  - **And** all Python agent steps MUST execute with `vertex=True` and environment variables `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` (defaulting to model `gemini-3.7-flash` with medium thinking budget, strictly requiring no model less than Gemini 3.5 Flash)
   - **And** the workflow MUST NOT require or reference any `GEMINI_API_KEY`
 
 - **Scenario 9: Standard Python Dependency Lifecycle**
@@ -203,7 +203,7 @@ sequenceDiagram
 | ID | Rule | Description & Rationale | Traceability Reference |
 |---|---|---|---|
 | **D-1** | WIF Keyless Auth | Authenticate to GCP exclusively via Workload Identity Federation OIDC token exchange (`auth@v2`). Zero API keys. | Scenario 8 |
-| **D-2** | Vertex AI Standard Mode | Set `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` in `LocalAgentConfig`. Default model `gemini-2.5-flash`. | Scenario 1, 5, 8 |
+| **D-2** | Vertex AI Standard Mode | Set `vertex=True`, `project=GOOGLE_CLOUD_PROJECT`, `location=GOOGLE_CLOUD_LOCATION` in `LocalAgentConfig`. Default model `gemini-3.7-flash` with medium thinking budget (minimum Gemini 3.5 Flash). | Scenario 1, 5, 8 |
 | **D-3** | Pydantic Schema Quality Gate | `QualityGateDecision` defines boolean `passed`, `summary`, and `failures: list[FailureDetail]`, with `@model_validator(mode="after")` invariant enforcing `passed == (len(failures) == 0)`. | Scenario 1, 2, 4 |
 | **D-4** | Pydantic Schema PR Review & Severity Mapping | `PRReviewReport` defines `overall_status: ReviewStatus`, `summary: str`, and `findings: list[InlineFinding]`. Findings with `BLOCKER` or `pii_leak=True` mandate `ReviewStatus.REQUEST_CHANGES` and map to `SeverityLevel.CRITICAL` in Quality Gate (`passed=False`). | Scenario 5, 7 |
 | **D-5** | Non-PR Event Graceful Exit | `pr_reviewer_agent.py` exits with status `0` immediately when `PULL_REQUEST_NUMBER` is unset or empty without invoking LLM or MCP containers. | Scenario 6 |

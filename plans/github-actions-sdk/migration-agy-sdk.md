@@ -47,6 +47,7 @@ config = LocalAgentConfig(
     vertex=True,
     project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
     location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+    model="gemini-3.7-flash",
     app_data_dir=os.path.abspath("reports/agent_data"),
 )
 ```
@@ -145,6 +146,7 @@ async def evaluate_quality_gate() -> int:
         vertex=True,
         project=project_id,
         location=location,
+        model="gemini-3.7-flash",
         system_instructions=(
             "You are a Lead Release Engineer and Security Gatekeeper. "
             "Evaluate combined DLP and PR code review reports against release criteria.\n"
@@ -259,6 +261,7 @@ async def run_pr_review() -> int:
         vertex=True,
         project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
         location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        model="gemini-3.7-flash",
         mcp_servers=[github_mcp],
         response_schema=PRReviewReport,
         app_data_dir=os.path.abspath("reports/telemetry/pr_review_agent"),

@@ -64,7 +64,7 @@ sequenceDiagram
     alt DLP Scan Report Missing / Empty
         QGA->>QGA: Deterministic Fail-Closed (passed=False, CRITICAL failure)
     else DLP Scan Report Available
-        QGA->>VTX: LocalAgentConfig(vertex=True, model="gemini-2.5-flash", response_schema=QualityGateDecision)
+        QGA->>VTX: LocalAgentConfig(vertex=True, model="gemini-3.7-flash", response_schema=QualityGateDecision)
         VTX-->>QGA: Structured QualityGateDecision (Pydantic)
     end
     QGA->>GHA: Write reports/gate-decision.json & reports/decision.txt (Exit Code 0)
@@ -206,7 +206,7 @@ sequenceDiagram
             *   If set, verify `reports/pr-review.txt` / `reports/pr-review.json` exists. If missing on active PR, inject high-severity failure into context.
             *   If unset (push event), supply default fallback text `"No PR review report available (push event or non-PR)."` without failing the gate.
         3.  **LocalAgentConfig Initialization:**
-            *   `model="gemini-2.5-flash"` (cites `# D-2`)
+            *   `model="gemini-3.7-flash"` with medium thinking budget (minimum Gemini 3.5 Flash, cites `# D-2`)
             *   `vertex=True`
             *   `project=os.environ.get("GOOGLE_CLOUD_PROJECT")`
             *   `location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")`
@@ -310,7 +310,7 @@ sequenceDiagram
             )
             ```
         5.  **Configure LocalAgentConfig:**
-            *   `model="gemini-2.5-flash"` (cites `# D-2`)
+            *   `model="gemini-3.7-flash"` with medium thinking budget (minimum Gemini 3.5 Flash, cites `# D-2`)
             *   `vertex=True`
             *   `project=os.environ.get("GOOGLE_CLOUD_PROJECT")`
             *   `location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")`
@@ -378,7 +378,7 @@ sequenceDiagram
 *   **CI Agent Unit & Contract Tests (`.github/scripts/tests/`):**
     *   Unit testing of Pydantic models, custom validators, and edge case invariants (`QualityGateDecision`, `PRReviewReport`, `InlineFinding`, `FailureDetail`, `PRFindingSeverity`).
     *   Deterministic fail-closed behavior on missing or empty Cloud DLP report files.
-    *   Mocked asynchronous context manager tests for `Agent(config)` with Vertex AI Standard Mode configuration (`model="gemini-2.5-flash"`).
+    *   Mocked asynchronous context manager tests for `Agent(config)` with Vertex AI Standard Mode configuration (`model="gemini-3.7-flash"` with medium thinking budget).
     *   Diff coordinate validation and mutation dispatch test cases (`validate_and_sanitize_findings()`).
     *   Dual-output file generation and formatting verification (`.json` and `.txt`).
     *   Graceful exit verification for non-PR push events.
@@ -396,7 +396,7 @@ sequenceDiagram
 | Spec Decision ID | Spec Scenario | Technical Plan Task | Verification / Test Assertion in `.github/scripts/tests/` |
 |---|---|---|---|
 | **D-1** (WIF Keyless Auth) | Scenario 8 | Task 2.A | `source-code-pii-review.yml` utilizes `google-github-actions/auth@v2` without `GEMINI_API_KEY`. |
-| **D-2** (Vertex AI Mode) | Scenario 1, 5, 8 | Task 1.A, 1.B, 2.A | `LocalAgentConfig(vertex=True, model="gemini-2.5-flash", project=..., location=...)` verified in agent initialization tests. |
+| **D-2** (Vertex AI Mode) | Scenario 1, 5, 8 | Task 1.A, 1.B, 2.A | `LocalAgentConfig(vertex=True, model="gemini-3.7-flash", project=..., location=...)` verified in agent initialization tests (medium thinking budget; minimum Gemini 3.5 Flash). |
 | **D-3** (Pydantic Gate Schema) | Scenario 1, 2, 4 | Task 1.A | `test_quality_gate_agent.py` validates `QualityGateDecision` invariant validator and schema fields. |
 | **D-4** (Pydantic PR Review Schema) | Scenario 5, 7 | Task 1.B | `test_pr_reviewer_agent.py` tests `PRFindingSeverity.BLOCKER` / `pii_leak=True` coercion to `ReviewStatus.REQUEST_CHANGES`. |
 | **D-5** (Non-PR Early Exit) | Scenario 6 | Task 1.B | `test_pr_reviewer_agent.py` asserts return code `0` and zero LLM calls when `PULL_REQUEST_NUMBER` unset. |

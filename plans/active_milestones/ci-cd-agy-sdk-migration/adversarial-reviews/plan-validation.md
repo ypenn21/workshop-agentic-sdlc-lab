@@ -56,7 +56,7 @@ The plan has sound architectural foundations (keyless WIF authentication, Pydant
 | `id` | severity | step | note |
 |---|---|---|---|
 | `missing-dlp-fail-closed-nondeterminism` | 🟠 medium | Task 1.A Step 2 | Task 1.A Step 2 suggests injecting fallback prompt context instead of a deterministic local short-circuit when `reports/pii-scan.txt` is missing. |
-| `vertex-model-location-mismatch` | 🔴 high | Task 1.A Step 2 & Task 1.B Step 2 | AGENTS.md Rule 4 mandates `MODEL_LOCATION=global` for Gemini 3 models on Vertex AI; ensure model is explicitly pinned to `gemini-2.5-flash` per spec D-2 when location is `us-central1`. |
+| `vertex-model-location-mismatch` | 🔴 high | Task 1.A Step 2 & Task 1.B Step 2 | AGENTS.md Rule 4 mandates `MODEL_LOCATION=global` for Gemini 3 models on Vertex AI; ensure model is explicitly pinned to `gemini-3.7-flash` (with medium thinking budget; minimum Gemini 3.5 Flash) per spec D-2 when location is `us-central1`. |
 
 ## Checks That Passed
 - **WIF Keyless Authentication:** `google-github-actions/auth@v2` configuration is valid, completely eliminating static `GEMINI_API_KEY` dependencies (`.github/workflows/source-code-pii-review.yml:48-54`).
@@ -72,4 +72,4 @@ The plan has sound architectural foundations (keyless WIF authentication, Pydant
 - [x] Update Task 1.B Step 2 to detail the post-processing execution of `validate_and_sanitize_findings()` and dispatch of GitHub MCP PR review comments (`pr-reviewer-missing-comment-mutation-execution`)
 - [x] Standardize enum name to `PRFindingSeverity` in Task 1.B Step 2 (`enum-naming-discrepancy-pr-finding-severity`)
 - [x] Set `GITHUB_REPOSITORY: ${{ github.repository }}` in Task 2.A workflow step and read both in `pr_reviewer_agent.py` (`workflow-step-env-repository-mismatch`)
-- [x] Explicitly pin `model="gemini-2.5-flash"` in `LocalAgentConfig` and specify immediate local fail-closed short-circuit on missing DLP scan (`vertex-model-location-mismatch`, `missing-dlp-fail-closed-nondeterminism`)
+- [x] Explicitly pin `model="gemini-3.7-flash"` (medium thinking budget) in `LocalAgentConfig` and specify immediate local fail-closed short-circuit on missing DLP scan (`vertex-model-location-mismatch`, `missing-dlp-fail-closed-nondeterminism`)
