@@ -302,3 +302,52 @@ async def test_run_pr_review_mock_agent_config_and_telemetry(tmp_path, monkeypat
     assert mcp.command == "docker"  # D-11
     assert "ghcr.io/github/github-mcp-server:v0.27.0" in mcp.args  # D-11
     assert os.path.isdir("reports/telemetry/pr_review_agent")  # D-10
+
+
+@pytest.mark.asyncio
+async def test_run_pr_review_streams_thinking_and_output(tmp_path, monkeypatch, capsys):
+    """Scenario: Validates streaming of Thought, ToolCall, ToolResult, and Text chunks."""
+    monkeypatch.chdir(tmp_path)
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    expected_report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="PR approved with streaming logs.",
+        findings=[],
+    )
+
+    from google.antigravity import types
+
+    async def mock_chunks_gen():
+        yield types.Thought(step_index=0, text="Deep thinking about PR #42 security posture...")
+        yield types.ToolCall(name="get_pull_request", args={"pr": 42})
+        yield types.ToolResult(name="get_pull_request", result={"title": "Fix bug"})
+        yield types.Text(step_index=0, text="PR analysis complete.")
+
+    mock_response = MagicMock()
+    mock_response.chunks = mock_chunks_gen()
+    mock_response.structured_output = AsyncMock(return_value=expected_report)
+
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent_instance):
+        report = await run_pr_review(
+            pr_number="42",
+            repo="owner/repo",
+            token="ghp_token",
+            pii_report_path=str(reports_dir / "pii-scan.txt"),
+            project_id="test-proj",
+            location="us-central1",
+        )
+
+    assert report is not None
+    assert report.overall_status == ReviewStatus.APPROVE
+    captured = capsys.readouterr()
+    assert "Deep thinking about PR #42 security posture..." in captured.out
+    assert "get_pull_request" in captured.out
+    assert "Structured LLM Output" in captured.out
+

@@ -209,6 +209,44 @@ Return a structured PRReviewReport.
         )
         async with Agent(config) as agent:
             response = await agent.chat(prompt)
+
+            thought_chunks: list[str] = []
+            text_chunks: list[str] = []
+            tool_calls_logged: list[str] = []
+
+            print("\n" + "=" * 60, flush=True)
+            print("🤖 PR REVIEWER AGENT EXECUTION & THINKING STREAM", flush=True)
+            print("=" * 60, flush=True)
+
+            try:
+                if hasattr(response, "chunks"):
+                    async for chunk in response.chunks:
+                        if isinstance(chunk, types.Thought):
+                            if not thought_chunks:
+                                print("\n🧠 [Thinking Process]:", flush=True)
+                            print(chunk.text, end="", flush=True)
+                            thought_chunks.append(chunk.text)
+                        elif isinstance(chunk, types.ToolCall):
+                            tool_info = f"[Tool Call] {chunk.name}({json.dumps(chunk.args) if isinstance(chunk.args, dict) else chunk.args})"
+                            print(f"\n🔧 {tool_info}", flush=True)
+                            tool_calls_logged.append(tool_info)
+                        elif isinstance(chunk, types.ToolResult):
+                            res_str = str(chunk.result)
+                            if len(res_str) > 300:
+                                res_str = res_str[:300] + "... [truncated]"
+                            res_info = f"[Tool Result] {chunk.name}: {res_str}"
+                            print(f"📦 {res_info}", flush=True)
+                            tool_calls_logged.append(res_info)
+                        elif isinstance(chunk, types.Text):
+                            if not text_chunks:
+                                print("\n\n💬 [LLM Text Output]:", flush=True)
+                            print(chunk.text, end="", flush=True)
+                            text_chunks.append(chunk.text)
+            except Exception as stream_err:
+                print(f"\n[Warning streaming chunks: {stream_err}]", flush=True)
+
+            print("\n" + "-" * 60, flush=True)
+
             raw_output = await response.structured_output()
             if isinstance(raw_output, PRReviewReport):
                 report = raw_output
@@ -219,11 +257,16 @@ Return a structured PRReviewReport.
             else:
                 report = PRReviewReport.model_validate(raw_output)
 
+            print("\n📄 [Structured LLM Output (PRReviewReport)]:", flush=True)
+            print(report.model_dump_json(indent=2), flush=True)
+            print("=" * 60 + "\n", flush=True)
+
             _write_pr_reports(report)
             return report
-    except Exception:
+    except Exception as e:
         # Fallback to deterministic review generation
-        pass
+        print(f"\n⚠️ Live Antigravity Agent execution unavailable or failed: {e}", flush=True)
+        print("Falling back to deterministic rule-based PR review evaluation.\n", flush=True)
 
     findings: list[InlineFinding] = []
     if (
@@ -275,8 +318,27 @@ async def main() -> None:
 
     report = await run_pr_review(pr_number=pr_num, repo=repo, token=token)
     if report:
-        print(f"PR Review Status: {report.overall_status.value}")
+        print("\n" + "=" * 60)
+        print("🎯 PR REVIEW FINAL SUMMARY")
+        print("=" * 60)
+        print(f"Status: {report.overall_status.value}")
         print(f"Summary: {report.summary}")
+        if report.findings:
+            print(f"\nFindings ({len(report.findings)}):")
+            for idx, finding in enumerate(report.findings, 1):
+                coord = (
+                    f"{finding.file_path}:{finding.line_number}"
+                    if finding.line_number is not None
+                    else finding.file_path
+                )
+                pii_tag = " [PII DETECTED]" if finding.pii_leak else ""
+                print(f"  {idx}. [{finding.severity.value}] {coord} - {finding.title}{pii_tag}")
+                print(f"     Details: {finding.details}")
+                if finding.suggestion:
+                    print(f"     Suggestion: {finding.suggestion}")
+        else:
+            print("\nFindings: None")
+        print("=" * 60 + "\n")
     # Always exit 0 on completion
     sys.exit(0)
 
