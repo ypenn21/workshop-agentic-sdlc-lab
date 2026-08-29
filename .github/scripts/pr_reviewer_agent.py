@@ -89,7 +89,7 @@ def format_pr_review_text(report: PRReviewReport) -> str:
             )
             pii_tag = " [PII DETECTED]" if finding.pii_leak else ""
             lines.append(
-                f"{idx}. [{finding.severity.value}]{pii_tag} {coord} - {finding.title}"
+                f"{idx}. [{finding.severity.value}] {coord} - {finding.title}{pii_tag}"
             )
             lines.append(f"   Details: {finding.details}")
             if finding.suggestion:
