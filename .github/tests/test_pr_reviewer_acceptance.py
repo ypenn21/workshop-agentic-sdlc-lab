@@ -89,7 +89,7 @@ async def test_acceptance_clean_pr_posts_positive_approval_review(tmp_path, monk
     assert req.headers["Accept"] == "application/vnd.github+json"  # D-1
 
     payload = json.loads(req.data.decode("utf-8"))
-    assert payload["event"] == "APPROVE"  # D-1
+    assert payload["event"] == "COMMENT"  # D-1
     assert payload["comments"] == []  # D-1
     assert "## ✅ Automated PR Review: APPROVED" in payload["body"]  # D-1
     assert "Great job! No code defects, architectural issues, or Cloud DLP security findings" in payload["body"]  # D-1
@@ -160,7 +160,7 @@ async def test_acceptance_pr_with_findings_posts_inline_and_summary(tmp_path, mo
     assert len(captured_requests) == 1  # D-2
 
     payload = json.loads(captured_requests[0].data.decode("utf-8"))
-    assert payload["event"] == "REQUEST_CHANGES"  # D-2
+    assert payload["event"] == "COMMENT"  # D-2
     assert len(payload["comments"]) == 1  # D-3
     assert payload["comments"][0]["path"] == "scorer/usage.py"  # D-3
     assert payload["comments"][0]["line"] == 20  # D-3

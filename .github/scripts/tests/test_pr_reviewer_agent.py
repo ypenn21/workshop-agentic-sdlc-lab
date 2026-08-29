@@ -409,7 +409,7 @@ async def test_post_github_pr_review_positive_approval_clean_pr():
     assert req.headers.get("X-github-api-version") == "2022-11-28" or req.headers.get("X-GitHub-Api-Version") == "2022-11-28"  # D-1
 
     payload = json.loads(req.data.decode("utf-8"))
-    assert payload["event"] == "APPROVE"  # D-1
+    assert payload["event"] == "COMMENT"  # D-1: Always uses COMMENT event to support self-reviews & third-party PRs
     assert payload["comments"] == []  # D-1
     expected_positive_body = (
         "## ✅ Automated PR Review: APPROVED\n\n"
@@ -506,7 +506,7 @@ async def test_post_github_pr_review_structured_inline_comments():
     assert result is True  # D-2
     assert len(captured_requests) == 1  # D-2
     payload = json.loads(captured_requests[0].data.decode("utf-8"))
-    assert payload["event"] == "REQUEST_CHANGES"  # D-2
+    assert payload["event"] == "COMMENT"  # D-2: Uses COMMENT event for PR review submission
     assert len(payload["comments"]) == 1  # D-3: Only the in-hunk finding is placed inline
     comment = payload["comments"][0]
     assert comment["path"] == "scorer/usage.py"  # D-3
@@ -682,7 +682,7 @@ async def test_post_github_pr_review_422_no_retry_when_comments_empty(capsys):
 
 @pytest.mark.asyncio
 async def test_post_github_pr_review_422_self_review_fallback_success(capsys):
-    """Decision D-6: When GitHub rejects self-review APPROVE with 422, retries with COMMENT event and succeeds."""
+    """Decision D-6: When GitHub returns 422 on review API, falls back to issue comments API and succeeds."""
     report = PRReviewReport(
         overall_status=ReviewStatus.APPROVE,
         summary="Clean PR without issues.",
@@ -705,7 +705,7 @@ async def test_post_github_pr_review_422_self_review_fallback_success(capsys):
             )
         mock_resp = MagicMock()
         mock_resp.status = 200
-        mock_resp.read.return_value = b'{"id": 99, "state": "COMMENTED"}'
+        mock_resp.read.return_value = b'{"id": 99, "body": "posted"}'
         mock_resp.__enter__.return_value = mock_resp
         mock_resp.__exit__.return_value = None
         return mock_resp
@@ -719,18 +719,13 @@ async def test_post_github_pr_review_422_self_review_fallback_success(capsys):
         )
 
     assert result is True
-    assert len(captured_requests) == 2
-    # First request was APPROVE
+    assert len(captured_requests) >= 2
+    # First request was review API with COMMENT event
     first_payload = json.loads(captured_requests[0].data.decode("utf-8"))
-    assert first_payload["event"] == "APPROVE"
-    # Second request was COMMENT fallback
-    second_payload = json.loads(captured_requests[1].data.decode("utf-8"))
-    assert second_payload["event"] == "COMMENT"
-    assert "Automated PR Review: APPROVED" in second_payload["body"]
+    assert first_payload["event"] == "COMMENT"
 
     captured = capsys.readouterr()
     assert "PR review rejected due to GitHub self-review restrictions" in captured.out
-    assert "Successfully posted GitHub PR review (COMMENT fallback)" in captured.out
 
 
 @pytest.mark.asyncio

@@ -147,7 +147,7 @@ async def post_github_pr_review(
         return False
 
     owner, repo_name = repo_parsed
-    event = report.overall_status.value
+    event = "COMMENT" #event = report.overall_status.value
     comments: list[dict[str, Any]] = []
 
     if not report.findings:
@@ -205,7 +205,7 @@ async def post_github_pr_review(
             _send_github_review_sync, owner, repo_name, pr_number, token, payload, 10
         )
         if status_code in (200, 201):
-            print(f"✅ Successfully posted GitHub PR review ({event}) to {owner}/{repo_name}#{pr_number}.")
+            print(f"✅ Successfully posted GitHub PR review ({report.overall_status.value}) to {owner}/{repo_name}#{pr_number}.")
             return True
 
         # Decision D-6: HTTP 422 handling & fallback
@@ -444,6 +444,9 @@ async def run_pr_review(
             "You are an expert Principal Code Reviewer and Security Auditor.\n\n"
             "Your objective is to thoroughly review Pull Request diffs, evaluate Cloud DLP security scans, "
             "and produce a structured PRReviewReport with line-level findings and remediation suggestions.\n\n"
+            "### TOOL USAGE POLICY:\n"
+            "- Use GitHub MCP tools ONLY for read operations (`pull_request_read`) to inspect PR metadata, modified files, and diff hunks.\n"
+            "- Do NOT attempt to create, approve, or submit reviews via GitHub MCP write tools. Return your findings in the structured PRReviewReport, and the review runner will automatically post the comments and review.\n\n"
             "### REVIEW GUIDELINES & CHECKLIST:\n"
             "1. **Logic & Correctness:** Verify control flow, boundary conditions, loop bounds, and algorithm correctness.\n"
             "2. **Null Pointers & Type Safety:** Check for potential NoneType dereferences, missing guard clauses, and unhandled optional types.\n"
@@ -469,15 +472,13 @@ async def run_pr_review(
 {pii_context or 'No DLP findings detected.'}
 
 2. Instructions:
-    - Use GitHub MCP tools (`pull_request_read`) to inspect the PR details, modified files, and diff hunks.
+    - Use GitHub MCP read tools (`pull_request_read`) to inspect the PR details, modified files, and diff hunks.
     - Inspect all modified lines against the review checklist (logic errors, null pointers, security risks, error handling, PEP 8).
-    - Use the available GitHub MCP tools to create a review and submit comments on the pull request.
-    - For any files or modified lines flagged with sensitive data / PII leaks or credentials in the DLP report or diff, comment directly on the affected files in the PR with explicit remediation instructions (e.g. removing sensitive tokens, moving secrets to environment variables/Secret Manager, or masking/redacting PII).
-    - Submit inline review comments for verifiable logic bugs, edge cases, and security vulnerabilities.
-    - Submit a concise final review summary that explicitly calls out code quality status and any required PII remediations."
-    - For clean PRs with zero defects, provide an encouraging summary confirming security and test compliance.
+    - For any files or modified lines flagged with sensitive data / PII leaks or credentials in the DLP report or diff, create a BLOCKER finding with `pii_leak: true` and explicit remediation instructions (e.g. moving secrets to Secret Manager, or redacting PII).
+    - For verifiable logic bugs, edge cases, and type safety issues, add line-level findings with precise file paths, line numbers, and code suggestions.
+    - For clean PRs with zero defects, return `findings: []`, set `overall_status` to `APPROVE`, and provide an encouraging summary confirming security and test compliance.
     - Return the final review conforming strictly to the PRReviewReport schema.
-    - If there is a issue adding any comments in the PR please give me an warning.
+    - Do NOT call MCP review creation/write tools directly; the runner handles posting the review.
 """
         config = LocalAgentConfig(
             vertex=True,
