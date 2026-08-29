@@ -648,7 +648,7 @@ async def test_post_github_pr_review_422_fallback_retry_success(capsys):
 
 @pytest.mark.asyncio
 async def test_post_github_pr_review_422_no_retry_when_comments_empty(capsys):
-    """Decision D-6, Scenario 5: HTTP 422 when comments is already empty does not attempt redundant retry."""
+    """Decision D-6, Scenario 5: HTTP 422 when comments is already empty does not attempt redundant retry on generic errors."""
     report = PRReviewReport(
         overall_status=ReviewStatus.APPROVE,
         summary="Clean PR.",
@@ -663,7 +663,7 @@ async def test_post_github_pr_review_422_no_retry_when_comments_empty(capsys):
             code=422,
             msg="Unprocessable Entity",
             hdrs={},
-            fp=BytesIO(b'{"message": "Cannot review own pull request"}'),
+            fp=BytesIO(b'{"message": "Generic unprocessable entity"}'),
         )
 
     with patch("urllib.request.urlopen", side_effect=mock_urlopen):
@@ -678,6 +678,59 @@ async def test_post_github_pr_review_422_no_retry_when_comments_empty(capsys):
     assert len(captured_requests) == 1  # D-6: Exactly 1 attempt, no redundant retry
     captured = capsys.readouterr()
     assert "[Warning] GitHub PR review rejected (HTTP 422" in captured.out  # D-6
+
+
+@pytest.mark.asyncio
+async def test_post_github_pr_review_422_self_review_fallback_success(capsys):
+    """Decision D-6: When GitHub rejects self-review APPROVE with 422, retries with COMMENT event and succeeds."""
+    report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="Clean PR without issues.",
+        findings=[],
+    )
+    captured_requests = []
+    first_call = True
+
+    def mock_urlopen(req, timeout=None):
+        nonlocal first_call
+        captured_requests.append(req)
+        if first_call:
+            first_call = False
+            raise urllib.error.HTTPError(
+                url=req.full_url,
+                code=422,
+                msg="Unprocessable Entity",
+                hdrs={},
+                fp=BytesIO(b'{"message":"Unprocessable Entity","errors":["Review Can not approve your own pull request"]}'),
+            )
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b'{"id": 99, "state": "COMMENTED"}'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        result = await post_github_pr_review(
+            report=report,
+            pr_number="4",
+            repo="owner/repo",
+            token="mock-token",
+        )
+
+    assert result is True
+    assert len(captured_requests) == 2
+    # First request was APPROVE
+    first_payload = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert first_payload["event"] == "APPROVE"
+    # Second request was COMMENT fallback
+    second_payload = json.loads(captured_requests[1].data.decode("utf-8"))
+    assert second_payload["event"] == "COMMENT"
+    assert "Automated PR Review: APPROVED" in second_payload["body"]
+
+    captured = capsys.readouterr()
+    assert "PR review rejected due to GitHub self-review restrictions" in captured.out
+    assert "Successfully posted GitHub PR review (COMMENT fallback)" in captured.out
 
 
 @pytest.mark.asyncio

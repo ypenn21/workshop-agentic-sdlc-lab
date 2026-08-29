@@ -87,6 +87,40 @@ def _send_github_review_sync(
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8") if e.fp else str(e)
         return e.code, err_body
+def _send_github_issue_comment_sync(
+    owner: str,
+    repo_name: str,
+    pr_number: Union[str, int],
+    token: str,
+    body: str,
+    timeout: int = 10,
+) -> tuple[int, str]:
+    """Synchronously executes the HTTP POST request to GitHub Issues Comment API as a fallback."""
+    import urllib.request
+    import urllib.error
+
+    url = f"https://api.github.com/repos/{owner}/{repo_name}/issues/{pr_number}/comments"
+    data = json.dumps({"body": body}).encode("utf-8")
+    req = urllib.request.Request(
+        url=url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "automated-pr-reviewer/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = resp.status
+            body_resp = resp.read().decode("utf-8")
+            return status, body_resp
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8") if e.fp else str(e)
+        return e.code, err_body
     except Exception as e:
         return 500, str(e)
 
@@ -98,59 +132,50 @@ async def post_github_pr_review(
     token: str,
     modified_files_diff: Optional[dict[str, list[int]]] = None,
 ) -> bool:
-    """Posts structured PR review to GitHub Pull Request Reviews API.
+    """Posts a structured review to GitHub Pull Request Review API.
 
-    Implements:
-    - Decision D-1: Canonical positive approval template for APPROVE with 0 findings.
-    - Decision D-2 & D-9: Direct event mapping (APPROVE, REQUEST_CHANGES, COMMENT).
-    - Decision D-3 & D-12: Inline comment structuring for modified diff hunks.
-    - Decision D-5: Non-fatal error handling and warning logging on network/auth errors.
-    - Decision D-6: Automatic single fallback retry on HTTP 422 line coordinate errors.
-    - Decision D-8: Repository sanitization and validation.
-    - Decision D-10: Asynchronous execution wrapper via asyncio.to_thread.
+    Handles zero-finding positive encouragement, line-level inline comments,
+    non-fatal network errors, and bounded HTTP 422 fallback retries.
     """
-    if not token:
-        print("[Warning] No GitHub token provided; skipping PR review submission.")
+    if not token or not token.strip():
+        print("[Warning] No GitHub token provided; skipping PR review submission.", flush=True)
         return False
 
-    parsed_repo = _sanitize_and_validate_repo(repo)
-    if not parsed_repo:
-        print(f"[Warning] Invalid repository format '{repo}'; expected 'owner/repo'. Skipping review submission.")
+    repo_parsed = _sanitize_and_validate_repo(repo)
+    if not repo_parsed:
+        print(f"[Warning] Invalid repository '{repo}'; skipping PR review submission.", flush=True)
         return False
 
-    owner, repo_name = parsed_repo
+    owner, repo_name = repo_parsed
+    event = report.overall_status.value
+    comments: list[dict[str, Any]] = []
 
     if not report.findings:
         if report.overall_status == ReviewStatus.APPROVE:
-            # Decision D-1: Canonical positive approval template
-            event = "APPROVE"
             body = POSITIVE_APPROVAL_TEMPLATE
-            comments: list[dict[str, Any]] = []
         else:
-            # Decision D-9: Zero findings non-APPROVE
-            event = report.overall_status.value
             body = report.summary
-            comments = []
     else:
-        # Decision D-2 & D-3: Findings present
-        event = report.overall_status.value
         inline_findings, general_findings = validate_and_sanitize_findings(
             report.findings, modified_files_diff or {}
         )
-        comments = []
+
         for finding in inline_findings:
-            comment_body = (
-                f"**[{finding.severity.value}] {finding.title}**"
-                + (" [PII DETECTED]" if finding.pii_leak else "")
-                + f"\n\n{finding.details}"
-            )
-            if finding.suggestion:
-                comment_body += f"\n\n```suggestion\n{finding.suggestion}\n```"
-            comments.append({
-                "path": finding.file_path,
-                "line": finding.line_number,
-                "body": comment_body,
-            })
+            if finding.line_number is not None:
+                comment_body = (
+                    f"**[{finding.severity.value}] {finding.title}**"
+                    + (" [PII DETECTED]" if finding.pii_leak else "")
+                    + f"\n\n{finding.details}"
+                )
+                if finding.suggestion:
+                    comment_body += f"\n\n```suggestion\n{finding.suggestion}\n```"
+                comments.append(
+                    {
+                        "path": finding.file_path,
+                        "line": finding.line_number,
+                        "body": comment_body,
+                    }
+                )
 
         # Top-level body summary detailing status and general findings
         body_lines = [
@@ -185,6 +210,40 @@ async def post_github_pr_review(
 
         # Decision D-6: HTTP 422 handling & fallback
         if status_code == 422:
+            is_self_review = (
+                "own pull request" in resp_body.lower()
+                or "cannot approve" in resp_body.lower()
+                or "can not approve" in resp_body.lower()
+            )
+            if is_self_review:
+                print(
+                    f"[Notice] PR review rejected due to GitHub self-review restrictions. Retrying with event 'COMMENT'...",
+                    flush=True,
+                )
+                comment_payload = {
+                    "body": body,
+                    "event": "COMMENT",
+                    "comments": comments,
+                }
+                retry_status, retry_body = await asyncio.to_thread(
+                    _send_github_review_sync, owner, repo_name, pr_number, token, comment_payload, 10
+                )
+                if retry_status in (200, 201):
+                    print(f"✅ Successfully posted GitHub PR review (COMMENT fallback) to {owner}/{repo_name}#{pr_number}.")
+                    return True
+
+                # If review submission is blocked, post via Issue Comments API
+                print(f"[Notice] Retrying comment submission via PR conversation comment API...", flush=True)
+                issue_status, issue_body = await asyncio.to_thread(
+                    _send_github_issue_comment_sync, owner, repo_name, pr_number, token, format_pr_review_text(report), 10
+                )
+                if issue_status in (200, 201):
+                    print(f"✅ Successfully posted PR comment via issue comment API to {owner}/{repo_name}#{pr_number}.")
+                    return True
+                else:
+                    print(f"[Warning] Failed to post PR comment fallback (HTTP {issue_status}: {issue_body}).")
+                    return False
+
             if len(comments) > 0:
                 print(f"[Warning] Initial review submission with inline comments failed (HTTP 422: {resp_body}). Retrying with consolidated body comments.")
                 fallback_body = format_pr_review_text(report)
@@ -199,9 +258,23 @@ async def post_github_pr_review(
                 if retry_status in (200, 201):
                     print(f"✅ Successfully posted fallback PR review ({event}) to {owner}/{repo_name}#{pr_number}.")
                     return True
-                else:
-                    print(f"[Warning] Fallback PR review submission failed (HTTP {retry_status}: {retry_body}).")
-                    return False
+                elif retry_status == 422 and ("own pull request" in retry_body.lower() or "approve" in retry_body.lower()):
+                    fallback_payload["event"] = "COMMENT"
+                    retry_comment_status, _ = await asyncio.to_thread(
+                        _send_github_review_sync, owner, repo_name, pr_number, token, fallback_payload, 10
+                    )
+                    if retry_comment_status in (200, 201):
+                        print(f"✅ Successfully posted fallback PR review (COMMENT) to {owner}/{repo_name}#{pr_number}.")
+                        return True
+                    issue_status, _ = await asyncio.to_thread(
+                        _send_github_issue_comment_sync, owner, repo_name, pr_number, token, fallback_body, 10
+                    )
+                    if issue_status in (200, 201):
+                        print(f"✅ Successfully posted fallback PR issue comment to {owner}/{repo_name}#{pr_number}.")
+                        return True
+
+                print(f"[Warning] Fallback PR review submission failed (HTTP {retry_status}: {retry_body}).")
+                return False
             else:
                 print(f"[Warning] GitHub PR review rejected (HTTP 422: {resp_body}).")
                 return False
