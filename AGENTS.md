@@ -46,6 +46,13 @@ workshop-agentic-sdlc-lab/
 │   ├── dispatch.sh            # Dispatches pinned commit to remote coder-agent & monitors branch
 │   ├── trajectory.py          # Formats and renders remote agent trajectory stream
 │   └── teardown.sh            # Cleans up deployed engines, secrets, and deploy keys
+├── .github/                   # CI/CD workflows & Antigravity review agents
+│   ├── workflows/             # GitHub Actions workflows (source-code-pii-review.yml)
+│   ├── scripts/               # CI/CD Antigravity agents (pr_reviewer_agent.py, quality_gate_agent.py)
+│   │   └── tests/             # Unit tests for CI/CD agent runners
+│   ├── terraform/             # Infrastructure-as-code for CI/CD agent IAM & Workload Identity
+│   ├── tests/                 # Acceptance test suite for CI/CD agent workflows
+│   └── README.md              # CI/CD agent setup and local testing guide
 └── .agents/                   # Workspace customizations for Antigravity CLI (agy)
     ├── agents/                # Custom subagents (e.g. contract-writer)
     ├── hooks/                 # Lifecycle hooks (auto-allow rules for pytest and writes)
@@ -114,6 +121,7 @@ The scoring system is split into two pure functions in `scorer/usage.py`. Neithe
 | **Run All Tests** | `uv run pytest -q` |
 | **Run Specific Test File** | `uv run pytest scorer/tests/test_score_contract.py` |
 | **Execute Scorer CLI** | `uv run python scorer/main.py` |
+| **Run CI/CD Agent Acceptance Tests** | `uv run pytest .github/tests/ -q` |
 | **Inspect Git Status** | `git status --short` |
 | **Deploy Remote Coder Agent** | `(cd coder-agent && agents-cli deploy --project $(gcloud config get-value project) --region $AGENT_ENGINE_LOCATION --agent-identity --update-env-vars GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true,MODEL_LOCATION=global --no-wait)` |
 | **Check Agent Deployment Status** | `(cd coder-agent && agents-cli deploy --status)` |
