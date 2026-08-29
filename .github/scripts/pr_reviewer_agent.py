@@ -35,7 +35,7 @@ class ReviewStatus(str, Enum):
 POSITIVE_APPROVAL_TEMPLATE = (
     "## ✅ Automated PR Review: APPROVED\n\n"
     "Great job! No code defects, architectural issues, or Cloud DLP security "
-    "findings were detected in this pull request. All changes look clean and ready to merge."
+    "findings were detected in this pull request. All changes look clean, robust, well-tested, and ready to merge."
 )
 
 
@@ -151,10 +151,13 @@ async def post_github_pr_review(
     comments: list[dict[str, Any]] = []
 
     if not report.findings:
-        # if report.overall_status == ReviewStatus.APPROVE:
-        #     body = POSITIVE_APPROVAL_TEMPLATE
-        # else:
-        body = report.summary
+        if report.overall_status == ReviewStatus.APPROVE:
+            if report.summary and report.summary.strip():
+                body = f"{POSITIVE_APPROVAL_TEMPLATE}\n\n### Summary & Implementation Highlights:\n{report.summary.strip()}"
+            else:
+                body = POSITIVE_APPROVAL_TEMPLATE
+        else:
+            body = report.summary
     else:
         inline_findings, general_findings = validate_and_sanitize_findings(
             report.findings, modified_files_diff or {}
@@ -472,7 +475,7 @@ async def run_pr_review(
             "- Specify exact `file_path` and `line_number` within the modified diff hunks.\n"
             "- Provide clear, concise `details` explaining the root cause, architectural/algorithmic impact, and failure modes.\n"
             "- Always provide actionable, syntactically valid replacement code in `suggestion`.\n"
-            "- If no defects are found, return `findings: []`, set status to `APPROVE`, and write an encouraging summary."
+            "- If no defects are found, return `findings: []`, set status to `APPROVE`, and write a meaningful, positive, and detailed `summary` highlighting specific implementation strengths, clean architecture, test coverage, and design choices."
         )
 
         prompt = f"""Perform an automated code review on Pull Request #{pr_number} in repository {repo}.
@@ -486,9 +489,8 @@ async def run_pr_review(
     - Inspect all modified lines against the review checklist (logic errors, REST API CRUD design standards, runtime performance / Big O complexity, memory usage / scalability, infinite loops / recursion stack overflows, design patterns & SOLID principles, engineering best practices, type safety, security risks, error handling, PEP 8).
     - For any files or modified lines flagged with sensitive data / PII leaks or credentials in the DLP report or diff, create a BLOCKER finding with `pii_leak: true` and explicit remediation instructions (e.g. moving secrets to Secret Manager, or redacting PII).
     - For verifiable logic bugs, REST API anti-patterns (e.g. GET mutations, missing pagination on endpoints, broken status codes), infinite loops, stack overflow hazards, severe performance/memory bottlenecks, and type safety issues, add line-level findings with precise file paths, line numbers, and actionable code suggestions.
-    - For clean PRs with zero defects, return `findings: []`, set `overall_status` to `APPROVE`, and provide an encouraging summary confirming security and test compliance.
+    - For clean PRs with zero defects, return `findings: []`, set `overall_status` to `APPROVE`, and generate a meaningful, personalized `summary` highlighting specific positive aspects of the implementation (e.g., elegant design choices, clean code structure, robust typing, thorough test coverage, or performance considerations) rather than a generic canned message.
     - Return the final review conforming strictly to the PRReviewReport schema.
-    - Post the PRReviewReport summary as an comment.
 """
         config = LocalAgentConfig(
             vertex=True,
