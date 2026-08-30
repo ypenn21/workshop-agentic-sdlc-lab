@@ -82,6 +82,7 @@ async def evaluate_quality_gate(
     project_id: Optional[str] = None,
     location: str = "us-central1",
     pr_number: Optional[str] = None,
+    model: Optional[str] = None,
     enforce: bool = False,
 ) -> QualityGateDecision:
     """Evaluates combined scan and review reports against release criteria.
@@ -97,6 +98,12 @@ async def evaluate_quality_gate(
         or "local-project"
     )
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", location)
+    model = (
+        model
+        or os.environ.get("LLM_Model")
+        or os.environ.get("LLM_MODEL")
+        or "gemini-3.7-flash"
+    )
     if pr_number is None:
         pr_number = os.environ.get("PULL_REQUEST_NUMBER") or os.environ.get("PR_NUMBER")
 
@@ -208,6 +215,7 @@ Return a structured QualityGateDecision response.
             vertex=True,
             project=project_id,
             location=location,
+            model=model,
             response_schema=QualityGateDecision,
             app_data_dir=telemetry_dir,
             system_instructions=(
