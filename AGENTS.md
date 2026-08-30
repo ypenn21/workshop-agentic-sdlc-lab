@@ -52,7 +52,7 @@ workshop-agentic-sdlc-lab/
 │   │   └── tests/             # Unit tests for CI/CD agent runners
 │   ├── terraform/             # Infrastructure-as-code for CI/CD agent IAM & Workload Identity
 │   ├── tests/                 # Acceptance test suite for CI/CD agent workflows
-│   └── README.md              # CI/CD agent setup and local testing guide
+│   └── CI_CD.md               # CI/CD agent setup and local testing guide
 └── .agents/                   # Workspace customizations for Antigravity CLI (agy)
     ├── agents/                # Custom subagents (e.g. contract-writer)
     ├── hooks/                 # Lifecycle hooks (auto-allow rules for pytest and writes)
