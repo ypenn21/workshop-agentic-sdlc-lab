@@ -1,8 +1,8 @@
 name: Source Code PII and Code Review
 
 on:
-  push:
-    branches: [ main ]
+  # push:
+  #   branches: [ main ]
   pull_request: # trigger
     types:
       - opened
