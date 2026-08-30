@@ -66,7 +66,21 @@ Before dispatching, ensure all required parameters (`owner/repo`, `COMMIT_SHA`, 
 - Determine the target branch name to push changes to:
   - For GitHub issues: default `agent/parse` (or `agent/issue-<issue_number>`).
   - For Jira tickets: default `agent/<key-in-lowercase>` (e.g., `agent/ops-9`) or `agent/parse`.
-- If ambiguous, confirm with the user using `ask_question`.
+### E. Mandatory Pre-Dispatch Parameter Confirmation Gate
+
+> [!IMPORTANT]
+> **MANDATORY PRE-DISPATCH PARAMETER CONFIRMATION:**
+> Before calling `start_query` or dispatching any coding job to `coder-agent`, you MUST pause and present the resolved parameters to the user for explicit confirmation:
+> - **Repository (`repo`)**: `<owner>/<repo>`
+> - **Commit SHA (`sha`)**: `<COMMIT_SHA>`
+> - **Target Branch (`branch`)**: `<branch_name>`
+> - **Issue Key / Number (`issue`)**: `<issue_key_or_number>`
+>
+> **Actionable Directive:**
+> 1. Display the four resolved parameters clearly in the conversation.
+> 2. Use `ask_question` (or inline prompt) asking: *"Please confirm the dispatch parameters: Are the SHA (`<sha>`), target branch (`<branch>`), and issue (`<issue>`) correct, or do you want to modify them before dispatching?"*
+> 3. If the user provides modifications or alternative values, update the parameters accordingly.
+> 4. **NEVER** dispatch the job without this explicit human confirmation.
 
 ---
 

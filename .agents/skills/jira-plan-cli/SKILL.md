@@ -218,9 +218,28 @@ Use `acli` commands when ticket updates, status transitions, or field edits are 
 
 ---
 
+## Phase 6: Pre-Dispatch Confirmation & Coder Dispatch
+
+> [!IMPORTANT]
+> **MANDATORY PRE-DISPATCH PARAMETER CONFIRMATION:**
+> Before dispatching any coding job to the remote `coder-agent`, you MUST pause and explicitly ask the user to confirm the dispatch parameters:
+> - **Repository (`repo`)**: e.g., `ypenn21/workshop-agentic-sdlc-lab`
+> - **Commit SHA (`sha`)**: The exact pushed commit SHA (e.g., `0fe7a15c2a98...`)
+> - **Target Branch (`branch`)**: The branch where coder-agent will push (e.g., `agent/ops-13` or `agent/parse`)
+> - **Issue Key / Number (`issue`)**: The Jira ticket key (e.g., `OPS-13`) or GitHub issue number
+>
+> **Actionable Directive:**
+> 1. Present the resolved `sha`, `branch`, `issue`, and `repo` clearly in the conversation.
+> 2. Use `ask_question` (or prompt inline) asking: *"Are these dispatch parameters (SHA, branch, issue) correct, or do you need to modify them before dispatching to coder-agent?"*
+> 3. If the user requests modifications, update the parameters accordingly.
+> 4. **NEVER** dispatch to `coder-agent` without receiving explicit confirmation from the user.
+
+---
+
 ## Final Steps
 
 1. Confirm that `plans/<feature-slug>.md` has been saved.
 2. Present a concise summary to the user with a clickable link to the plan file.
 3. **DO NOT IMPLEMENT THE PLAN** unless explicitly requested in a follow-up prompt.
+4. If coder dispatch is requested, strictly execute **Phase 6: Pre-Dispatch Confirmation** before invoking `coder-dispatch`.
 
