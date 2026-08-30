@@ -73,7 +73,7 @@ jobs:
             if [ -s "$file" ]; then
               echo "Inspecting $file..." >> reports/pii-scan.txt
               RESULT=$(gcloud alpha dlp text inspect \
-                --info-types=EMAIL_ADDRESS,PHONE_NUMBER,LOCATION,CREDIT_CARD_NUMBER,AUTH_TOKEN,API_KEY \
+                --info-types=EMAIL_ADDRESS,PHONE_NUMBER,LOCATION,CREDIT_CARD_NUMBER,AUTH_TOKEN,GCP_API_KEY,GCP_CREDENTIALS \
                 --content-file="$file" \
                 --format="json" 2>/dev/null || echo "{}")
               
@@ -82,6 +82,16 @@ jobs:
                 echo "⚠️ [PII DETECTED] $file ($FINDINGS_COUNT findings)" | tee -a reports/pii-scan.txt
                 echo "$RESULT" | jq -r '.findings[] | "  - Type: \(.infoType.name) | Likelihood: \(.likelihood)"' >> reports/pii-scan.txt
                 TOTAL_FINDINGS=$((TOTAL_FINDINGS + FINDINGS_COUNT))
+              fi
+
+              REGEX_MATCHES=$(grep -n -E "(GEMINI_API_KEY|API_KEY|SECRET_KEY|ACCESS_KEY|PRIVATE_KEY)[[:space:]]*=[[:space:]]*['\"]?[A-Za-z0-9_.-]{16,}|AIza[0-9A-Za-z_-]{35}|AQ\.[A-Za-z0-9_-]{30,}" "$file" 2>/dev/null | grep -v -E "^[0-9]+:[[:space:]]*#" || true)
+              if [ -n "$REGEX_MATCHES" ]; then
+                MATCH_COUNT=$(echo "$REGEX_MATCHES" | wc -l | tr -d ' ')
+                echo "⚠️ [PII DETECTED] $file ($MATCH_COUNT secret findings via pattern match)" | tee -a reports/pii-scan.txt
+                while IFS= read -r line_match; do
+                  echo "  - Type: AUTH_TOKEN / API_KEY (Pattern Match) | $line_match" >> reports/pii-scan.txt
+                done <<< "$REGEX_MATCHES"
+                TOTAL_FINDINGS=$((TOTAL_FINDINGS + MATCH_COUNT))
               fi
             fi
           done < <(find . -type f \
