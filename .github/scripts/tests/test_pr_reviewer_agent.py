@@ -901,4 +901,84 @@ def test_fetch_pr_modified_lines_handles_network_error(capsys):
     assert "[Warning] Could not fetch PR diff hunks from GitHub API" in captured.out
 
 
+@pytest.mark.asyncio
+async def test_run_pr_review_model_selection_from_env_var(tmp_path, monkeypatch):
+    """Validates that run_pr_review honors LLM_Model environment variable."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LLM_Model", "gemini-2.5-pro")
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    expected_report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="PR approved.",
+        findings=[],
+    )
+
+    mock_response = MagicMock()
+    mock_response.structured_output = AsyncMock(return_value=expected_report)
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent_instance) as mock_agent_cls, \
+         patch.object(pr_reviewer_agent, "post_github_pr_review", new_callable=AsyncMock) as mock_post_review:
+        mock_post_review.return_value = True
+        await run_pr_review(
+            pr_number="100",
+            repo="org/repo",
+            token="test-token",
+            pii_report_path=str(reports_dir / "pii-scan.txt"),
+            project_id="test-proj",
+            location="us-central1",
+        )
+
+        mock_agent_cls.assert_called_once()
+        captured_config = mock_agent_cls.call_args[0][0]
+
+    assert captured_config.model == "gemini-2.5-pro"
+
+
+@pytest.mark.asyncio
+async def test_run_pr_review_model_selection_explicit_arg(tmp_path, monkeypatch):
+    """Validates that explicit model argument overrides LLM_Model environment variable."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LLM_Model", "gemini-2.5-pro")
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    expected_report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="PR approved.",
+        findings=[],
+    )
+
+    mock_response = MagicMock()
+    mock_response.structured_output = AsyncMock(return_value=expected_report)
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent_instance) as mock_agent_cls, \
+         patch.object(pr_reviewer_agent, "post_github_pr_review", new_callable=AsyncMock) as mock_post_review:
+        mock_post_review.return_value = True
+        await run_pr_review(
+            pr_number="100",
+            repo="org/repo",
+            token="test-token",
+            pii_report_path=str(reports_dir / "pii-scan.txt"),
+            project_id="test-proj",
+            location="us-central1",
+            model="gemini-custom-model",
+        )
+
+        mock_agent_cls.assert_called_once()
+        captured_config = mock_agent_cls.call_args[0][0]
+
+    assert captured_config.model == "gemini-custom-model"
+
+
+
 

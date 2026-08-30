@@ -436,6 +436,7 @@ async def run_pr_review(
     pii_report_path: str = "reports/pii-scan.txt",
     project_id: Optional[str] = None,
     location: str = "us-central1",
+    model: Optional[str] = None,
     modified_files_diff: Optional[dict[str, list[int]]] = None,
 ) -> Optional[PRReviewReport]:
     """Runs automated PR review using Antigravity SDK and GitHub MCP server.
@@ -469,6 +470,12 @@ async def run_pr_review(
         or "local-project"
     )
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", location)
+    model = (
+        model
+        or os.environ.get("LLM_Model")
+        or os.environ.get("LLM_MODEL")
+        or "gemini-3.7-flash"
+    )
 
     if modified_files_diff is None and pr_number and repo and token:
         repo_parsed = _sanitize_and_validate_repo(repo)
@@ -559,7 +566,7 @@ async def run_pr_review(
             vertex=True,
             project=project_id,
             location=location,
-            model="gemini-3.7-flash",
+            model=model,
             response_schema=PRReviewReport,
             mcp_servers=[mcp_server],
             app_data_dir=telemetry_dir,

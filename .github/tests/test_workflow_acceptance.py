@@ -53,3 +53,13 @@ def test_workflow_archives_telemetry_to_gcs(workflow_content):
     """Workflow must upload reports directory including telemetry to GCS."""
     assert "upload-cloud-storage" in workflow_content  # D-10
     assert "path: 'reports'" in workflow_content or 'path: "reports"' in workflow_content  # D-10
+
+
+def test_workflow_configures_llm_model_env(workflow_content, workflow_yaml):
+    """Workflow must configure LLM_Model env var with fallback to gemini-3.7-flash."""
+    assert "LLM_Model" in workflow_content
+    assert "gemini-3.7-flash" in workflow_content
+    env = workflow_yaml.get("env", {})
+    assert "LLM_Model" in env
+    assert "gemini-3.7-flash" in env["LLM_Model"]
+

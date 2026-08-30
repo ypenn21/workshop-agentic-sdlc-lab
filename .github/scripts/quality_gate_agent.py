@@ -208,7 +208,6 @@ Return a structured QualityGateDecision response.
             vertex=True,
             project=project_id,
             location=location,
-            model="gemini-3.7-flash",
             response_schema=QualityGateDecision,
             app_data_dir=telemetry_dir,
             system_instructions=(

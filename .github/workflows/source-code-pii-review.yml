@@ -20,6 +20,7 @@ env:
   GOOGLE_CLOUD_PROJECT_NUMBER: ${{ secrets.GOOGLE_CLOUD_PROJECT_NUMBER || vars.GCP_PROJECT_NUMBER }}
   GOOGLE_GENAI_USE_VERTEXAI: 'true'
   GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION || 'us-central1' }}
+  LLM_Model: ${{ vars.LLM_MODEL || vars.LLM_Model || secrets.LLM_MODEL || secrets.LLM_Model || 'gemini-3.7-flash' }}
 
 jobs:
   scan-and-evaluate:

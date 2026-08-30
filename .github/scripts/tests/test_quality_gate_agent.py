@@ -374,3 +374,83 @@ async def test_evaluate_quality_gate_telemetry_directory_created(tmp_path, monke
     )
 
     assert os.path.isdir("reports/telemetry/quality_gate_agent")  # D-10
+
+
+@pytest.mark.asyncio
+async def test_evaluate_quality_gate_model_selection_from_env_var(tmp_path, monkeypatch):
+    """Validates that evaluate_quality_gate honors LLM_Model environment variable."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LLM_Model", "gemini-2.5-pro")
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    pii_scan = reports_dir / "pii-scan.txt"
+    pii_scan.write_text("No findings", encoding="utf-8")
+
+    expected_decision = QualityGateDecision(
+        passed=True,
+        summary="All quality and security criteria passed cleanly.",
+        failures=[],
+    )
+
+    mock_response = MagicMock()
+    mock_response.structured_output = AsyncMock(return_value=expected_decision)
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(quality_gate_agent, "Agent", return_value=mock_agent_instance) as mock_agent_cls:
+        await evaluate_quality_gate(
+            pii_report_path=str(pii_scan),
+            pr_review_path=str(reports_dir / "pr-review.txt"),
+            project_id="test-project",
+            location="us-central1",
+            pr_number="10",
+        )
+
+        mock_agent_cls.assert_called_once()
+        captured_config = mock_agent_cls.call_args[0][0]
+
+    assert captured_config.model == "gemini-2.5-pro"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_quality_gate_model_selection_explicit_arg(tmp_path, monkeypatch):
+    """Validates that explicit model argument overrides LLM_Model environment variable."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LLM_Model", "gemini-2.5-pro")
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    pii_scan = reports_dir / "pii-scan.txt"
+    pii_scan.write_text("No findings", encoding="utf-8")
+
+    expected_decision = QualityGateDecision(
+        passed=True,
+        summary="All quality and security criteria passed cleanly.",
+        failures=[],
+    )
+
+    mock_response = MagicMock()
+    mock_response.structured_output = AsyncMock(return_value=expected_decision)
+    mock_agent_instance = MagicMock()
+    mock_agent_instance.__aenter__ = AsyncMock(return_value=mock_agent_instance)
+    mock_agent_instance.__aexit__ = AsyncMock(return_value=None)
+    mock_agent_instance.chat = AsyncMock(return_value=mock_response)
+
+    with patch.object(quality_gate_agent, "Agent", return_value=mock_agent_instance) as mock_agent_cls:
+        await evaluate_quality_gate(
+            pii_report_path=str(pii_scan),
+            pr_review_path=str(reports_dir / "pr-review.txt"),
+            project_id="test-project",
+            location="us-central1",
+            pr_number="10",
+            model="gemini-custom-model",
+        )
+
+        mock_agent_cls.assert_called_once()
+        captured_config = mock_agent_cls.call_args[0][0]
+
+    assert captured_config.model == "gemini-custom-model"
+

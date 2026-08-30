@@ -69,7 +69,7 @@ sequenceDiagram
   * `reports/pii-scan.json` (Structured JSON findings array)
 
 ### Stage 2: Antigravity PR Reviewer Agent ([`pr_reviewer_agent.py`](scripts/pr_reviewer_agent.py))
-* **Model & Engine:** `google.antigravity.Agent` configured with `model="gemini-3.7-flash"` on Vertex AI.
+* **Model & Engine:** `google.antigravity.Agent` configured via `LLM_Model` environment variable (defaults to `gemini-3.7-flash`) on Vertex AI.
 * **GitHub Integration:** Connected via GitHub MCP (`ghcr.io/github/github-mcp-server:v0.27.0`) for inspecting PR diffs, metadata, and files.
 * **Review Checklist & Guardrails:**
   1. **Logic & Correctness:** Boundary conditions, off-by-one errors, and control flow.
