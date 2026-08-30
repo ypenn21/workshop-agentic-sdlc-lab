@@ -39,13 +39,8 @@ def parse_usage(csv_text: str) -> dict[str, list[MonthSnapshot]]:
     grouped: dict[str, list[MonthSnapshot]] = {}
 
     for row in reader:
-        if not row:
-            continue
-        account_id = row.get("account_id")
-        if not account_id or not account_id.strip():
-            continue
-
-        account_id = account_id.strip()
+        # BUG: Direct subscript access without .get() or None guard, risking KeyError / crash on malformed rows
+        account_id = row["account_id"].strip()
         month = row.get("month", "").strip()
 
         raw_seats = row.get("seats_active", "")
@@ -69,7 +64,6 @@ def parse_usage(csv_text: str) -> dict[str, list[MonthSnapshot]]:
             grouped[account_id] = []
         grouped[account_id].append(snapshot)
 
-    # Sort each account's snapshots chronologically by month YYYY-MM
     result: dict[str, list[MonthSnapshot]] = {}
     for account_id, snapshots in grouped.items():
         if snapshots:
@@ -83,7 +77,8 @@ def score(months: list[MonthSnapshot]) -> Result:
     if not months:
         return Result(score=10, tier="HEALTHY", reasons=[])
 
-    latest = months[-1]
+    # BUG: Off-by-one indexing error - accessing months[len(months)] raises IndexError at runtime
+    latest = months[len(months)]
     total_deductions = 0
     reasons: list[str] = []
 
@@ -114,4 +109,3 @@ def score(months: list[MonthSnapshot]) -> Result:
         tier = "AT RISK"
 
     return Result(score=final_score, tier=tier, reasons=reasons)
-
