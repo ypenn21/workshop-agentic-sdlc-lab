@@ -61,7 +61,10 @@ async def test_acceptance_clean_pr_posts_positive_approval_review(tmp_path, monk
         captured_requests.append(req)
         mock_resp = MagicMock()
         mock_resp.status = 200
-        mock_resp.read.return_value = b'{"id": 1001, "state": "APPROVED"}'
+        if "files" in req.full_url:
+            mock_resp.read.return_value = b"[]"
+        else:
+            mock_resp.read.return_value = b'{"id": 1001, "state": "APPROVED"}'
         mock_resp.__enter__.return_value = mock_resp
         mock_resp.__exit__.return_value = None
         return mock_resp
@@ -82,8 +85,9 @@ async def test_acceptance_clean_pr_posts_positive_approval_review(tmp_path, monk
     assert os.path.exists("reports/pr-review.json")  # D-7
     assert os.path.exists("reports/pr-review.txt")  # D-7
 
-    assert len(captured_requests) == 1  # D-1
-    req = captured_requests[0]
+    review_requests = [r for r in captured_requests if "/reviews" in r.full_url]
+    assert len(review_requests) == 1  # D-1
+    req = review_requests[0]
     assert req.full_url == "https://api.github.com/repos/octocat/Hello-World/pulls/42/reviews"  # D-1
     assert req.headers["Authorization"] == "Bearer ghp_secret_token"  # D-1
     assert req.headers["Accept"] == "application/vnd.github+json"  # D-1

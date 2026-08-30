@@ -35,7 +35,7 @@ class ReviewStatus(str, Enum):
 POSITIVE_APPROVAL_TEMPLATE = (
     "## ✅ Automated PR Review: APPROVED\n\n"
     "Great job! No code defects, architectural issues, or Cloud DLP security "
-    "findings were detected in this pull request. All changes look clean, robust, well-tested, and ready to merge."
+    "findings were detected in this pull request. All changes look clean and ready to merge."
 )
 
 
@@ -51,6 +51,61 @@ def _sanitize_and_validate_repo(repo: str) -> Optional[tuple[str, str]]:
     if len(parts) == 2 and parts[0] and parts[1]:
         return parts[0], parts[1]
     return None
+
+
+def fetch_pr_modified_lines(
+    owner: str,
+    repo_name: str,
+    pr_number: Union[str, int],
+    token: str,
+    timeout: int = 10,
+) -> dict[str, list[int]]:
+    """Fetches PR modified files and parses line numbers within diff hunks from GitHub API."""
+    import re
+    import urllib.request
+    import urllib.error
+
+    if not token or not token.strip():
+        return {}
+
+    url = f"https://api.github.com/repos/{owner}/{repo_name}/pulls/{pr_number}/files?per_page=100"
+    req = urllib.request.Request(
+        url=url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "automated-pr-reviewer/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    diff_map: dict[str, list[int]] = {}
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            files_data = json.loads(resp.read().decode("utf-8"))
+            for file_info in files_data:
+                filename = file_info.get("filename")
+                patch = file_info.get("patch", "")
+                if not filename or not patch:
+                    continue
+
+                lines: list[int] = []
+                current_line = 0
+                for line in patch.splitlines():
+                    hunk_match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+                    if hunk_match:
+                        current_line = int(hunk_match.group(1))
+                    elif line.startswith("+") and not line.startswith("+++"):
+                        lines.append(current_line)
+                        current_line += 1
+                    elif line.startswith(" "):
+                        lines.append(current_line)
+                        current_line += 1
+                diff_map[filename] = lines
+    except Exception as e:
+        print(f"[Warning] Could not fetch PR diff hunks from GitHub API: {e}", flush=True)
+
+    return diff_map
 
 
 def _send_github_review_sync(
@@ -414,6 +469,14 @@ async def run_pr_review(
         or "local-project"
     )
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", location)
+
+    if modified_files_diff is None and pr_number and repo and token:
+        repo_parsed = _sanitize_and_validate_repo(repo)
+        if repo_parsed:
+            owner, repo_name = repo_parsed
+            modified_files_diff = await asyncio.to_thread(
+                fetch_pr_modified_lines, owner, repo_name, pr_number, token
+            )
 
     os.makedirs("reports", exist_ok=True)
     telemetry_dir = os.path.abspath("reports/telemetry/pr_review_agent")

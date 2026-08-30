@@ -33,6 +33,7 @@ from pr_reviewer_agent import (
     validate_and_sanitize_findings,
     format_pr_review_text,
     run_pr_review,
+    fetch_pr_modified_lines,
 )
 
 
@@ -412,9 +413,9 @@ async def test_post_github_pr_review_positive_approval_clean_pr():
     assert payload["event"] == "COMMENT"  # D-1: Always uses COMMENT event to support self-reviews & third-party PRs
     assert payload["comments"] == []  # D-1
     expected_positive_body = (
-        "## ✅ Automated PR Review: APPROVED\n\n"
-        "Great job! No code defects, architectural issues, or Cloud DLP security "
-        "findings were detected in this pull request. All changes look clean and ready to merge."
+        f"{POSITIVE_APPROVAL_TEMPLATE}\n\n"
+        "### Summary & Implementation Highlights:\n"
+        "Clean PR without issues."
     )
     assert payload["body"] == expected_positive_body  # D-1
 
@@ -845,5 +846,59 @@ async def test_post_github_pr_review_missing_token_skips(capsys):
         mock_urlopen.assert_not_called()  # D-5
     captured = capsys.readouterr()
     assert "[Warning] No GitHub token provided; skipping PR review submission." in captured.out  # D-5
+
+
+def test_fetch_pr_modified_lines_empty_token():
+    """Returns empty dict when token is empty or whitespace."""
+    assert fetch_pr_modified_lines("owner", "repo", 1, "") == {}
+    assert fetch_pr_modified_lines("owner", "repo", 1, "   ") == {}
+
+
+def test_fetch_pr_modified_lines_success_parses_hunks():
+    """Parses modified lines within unified diff hunks correctly."""
+    mock_files_json = json.dumps([
+        {
+            "filename": "scorer/usage.py",
+            "patch": "@@ -1,4 +1,5 @@\n import os\n+import csv\n def parse():\n@@ -40,3 +41,4 @@\n x = 1\n+y = 2\n z = 3",
+        },
+        {
+            "filename": "README.md",
+            "patch": "@@ -10,3 +10,3 @@\n-old line\n+new line\n context",
+        },
+        {
+            "filename": "deleted.py",
+            "patch": "",
+        },
+    ]).encode("utf-8")
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = mock_files_json
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = None
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        diff_map = fetch_pr_modified_lines("owner", "repo", 42, "mock-token")
+
+    assert "scorer/usage.py" in diff_map
+    # First hunk: 1 (context), 2 (+import csv), 3 (context)
+    # Second hunk: 41 (context), 42 (+y = 2), 43 (context)
+    assert 2 in diff_map["scorer/usage.py"]
+    assert 42 in diff_map["scorer/usage.py"]
+
+    assert "README.md" in diff_map
+    # Hunk: 10 (+new line), 11 (context)
+    assert 10 in diff_map["README.md"]
+    assert "deleted.py" not in diff_map
+
+
+def test_fetch_pr_modified_lines_handles_network_error(capsys):
+    """Gracefully catches network errors and returns empty dict."""
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Network unreachable")):
+        diff_map = fetch_pr_modified_lines("owner", "repo", 42, "mock-token")
+    assert diff_map == {}
+    captured = capsys.readouterr()
+    assert "[Warning] Could not fetch PR diff hunks from GitHub API" in captured.out
+
 
 
