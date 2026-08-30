@@ -131,6 +131,8 @@ async def evaluate_quality_gate(
 
     pii_content = Path(pii_report_path).read_text(encoding="utf-8")
 
+    failures: list[FailureDetail] = []
+
     # 2. Check PR Review Report (Decision D-7)
     if not os.path.exists(pr_review_path):
         if not pr_number:
@@ -138,21 +140,16 @@ async def evaluate_quality_gate(
             pr_review_content = "No PR review report available (push event or non-PR)."
         else:
             # Active PR event: missing review is a failure
-            decision = QualityGateDecision(
-                passed=False,
-                summary="Quality gate failed: PR review report is missing on an active pull request.",
-                failures=[
-                    FailureDetail(
-                        category=ViolationCategory.SECURITY_VULNERABILITY,
-                        component="PR Reviewer",
-                        severity=SeverityLevel.HIGH,
-                        reason="PR review report (reports/pr-review.txt) was not generated for pull request.",
-                        remediation="Ensure PR Reviewer Agent runs before Quality Gate on pull requests.",
-                    )
-                ],
+            pr_review_content = "No PR review report available."
+            failures.append(
+                FailureDetail(
+                    category=ViolationCategory.SECURITY_VULNERABILITY,
+                    component="PR Reviewer",
+                    severity=SeverityLevel.HIGH,
+                    reason="PR review report (reports/pr-review.txt) was not generated for pull request.",
+                    remediation="Ensure PR Reviewer Agent runs before Quality Gate on pull requests.",
+                )
             )
-            _write_reports(decision)
-            return decision
     else:
         pr_review_content = Path(pr_review_path).read_text(encoding="utf-8")
 
@@ -171,8 +168,6 @@ async def evaluate_quality_gate(
         "REQUEST_CHANGES" in pr_review_content
         or "[BLOCKER]" in pr_review_content
     )
-
-    failures: list[FailureDetail] = []
 
     if pii_has_violations and "No sensitive data" not in pii_content:
         failures.append(
