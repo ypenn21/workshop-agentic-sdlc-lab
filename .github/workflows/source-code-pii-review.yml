@@ -85,7 +85,10 @@ jobs:
               fi
             fi
           done < <(find . -type f \
-            -not -path '*/.*' \
+            \( -not -path '*/.*' -o -name ".env*" -o -name "*.env" \) \
+            -not -path './.git/*' \
+            -not -path './.venv/*' \
+            -not -path './.pytest_cache/*' \
             -not -path './reports/*' \
             -not -path './plans/*' \
             -not -path './extensions/*' \
@@ -97,7 +100,13 @@ jobs:
             -not -name "*.jpg" \
             -not -name "*.zip" \
             -size -500k \
-            \( -name "*.tf" -o -name "*.yml" -o -name "*.yaml" -o -name "*.md" -o -name "*.sh" -o -name "*.py" -o -name "*.json" -o -name "*.toml" -o -name "*.html" -o -name "*.sql" \) \
+            \( \
+              -name ".env" -o -name ".env.*" -o -name "*.env" -o -name "*.pem" -o -name "*.key" -o -name "*.crt" -o -name "*.cert" \
+              -o -name "Dockerfile" -o -name "Dockerfile.*" -o -name "Makefile" -o -name "Procfile" -o -name "Jenkinsfile" \
+              -o -name "*.ini" -o -name "*.cfg" -o -name "*.conf" -o -name "*.properties" -o -name "*.xml" -o -name "*.csv" -o -name "*.txt" \
+              -o -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.css" -o -name "*.scss" \
+              -o -name "*.tf" -o -name "*.yml" -o -name "*.yaml" -o -name "*.md" -o -name "*.sh" -o -name "*.py" -o -name "*.json" -o -name "*.toml" -o -name "*.html" -o -name "*.sql" \
+            \) \
             -print0)
 
           if [ "$TOTAL_FINDINGS" -eq 0 ]; then
