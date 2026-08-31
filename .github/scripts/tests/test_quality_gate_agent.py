@@ -386,6 +386,7 @@ async def test_evaluate_quality_gate_model_selection_from_env_var(tmp_path, monk
 
     pii_scan = reports_dir / "pii-scan.txt"
     pii_scan.write_text("No findings", encoding="utf-8")
+    (reports_dir / "pr-review.txt").write_text("Clean review", encoding="utf-8")
 
     expected_decision = QualityGateDecision(
         passed=True,
@@ -425,6 +426,7 @@ async def test_evaluate_quality_gate_model_selection_explicit_arg(tmp_path, monk
 
     pii_scan = reports_dir / "pii-scan.txt"
     pii_scan.write_text("No findings", encoding="utf-8")
+    (reports_dir / "pr-review.txt").write_text("Clean review", encoding="utf-8")
 
     expected_decision = QualityGateDecision(
         passed=True,

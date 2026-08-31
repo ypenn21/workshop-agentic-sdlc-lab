@@ -13,6 +13,12 @@
   - *Spec:* `plans/active_milestones/pr-review-comment-posting/spec.md`
   - *Plan:* `plans/active_milestones/pr-review-comment-posting/plan.md`
   - *Audit:* `plans/active_milestones/pr-review-comment-posting/audit.md`
+- [x] **Milestone: PR Reviewer Agent Comment Deduplication Across Pipeline Runs** - STATUS: COMPLETED
+  - *Description:* Deduplicate inline review comments across CI re-runs and incremental commits by querying existing PR comments via GitHub REST API.
+  - *Context:* `plans/active_milestones/pr-reviewer-comment-deduplication/context.md`
+  - *Spec:* `plans/active_milestones/pr-reviewer-comment-deduplication/spec.md`
+  - *Plan:* `plans/active_milestones/pr-reviewer-comment-deduplication/plan.md`
+  - *Audit:* `plans/active_milestones/pr-reviewer-comment-deduplication/audit.md`
 ## 📦 Release v1.1.0 (Target Date: 2026-10-01) - STATUS: PENDING
 - [ ] **Milestone 2: Automated Slack/Email Alerting on AT RISK Accounts** - STATUS: PENDING
   - *Description:* Dispatch weekly notification summaries to Customer Success channel for accounts entering AT RISK tier.

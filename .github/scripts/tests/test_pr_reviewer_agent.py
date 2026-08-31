@@ -34,6 +34,8 @@ from pr_reviewer_agent import (
     format_pr_review_text,
     run_pr_review,
     fetch_pr_modified_lines,
+    fetch_pr_comments,
+    _is_duplicate_comment,
 )
 
 
@@ -980,5 +982,319 @@ async def test_run_pr_review_model_selection_explicit_arg(tmp_path, monkeypatch)
     assert captured_config.model == "gemini-custom-model"
 
 
+# =====================================================================
+# Decision D-1, D-6: Comment Fetching via GitHub REST API (fetch_pr_comments)
+# =====================================================================
+
+def test_fetch_pr_comments_empty_token_returns_empty_list():
+    """Decision D-1: When token is missing or empty/whitespace, returns empty list without making network calls."""
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        assert fetch_pr_comments("owner", "repo", 42, "") == []  # D-1
+        assert fetch_pr_comments("owner", "repo", 42, "   ") == []  # D-1
+        mock_urlopen.assert_not_called()  # D-1
 
 
+def test_fetch_pr_comments_success_parses_comments():
+    """Decision D-1: Fetches existing PR review comments and parses JSON array with expected headers and query param."""
+    mock_comments = [
+        {
+            "id": 1,
+            "path": "scorer/usage.py",
+            "line": 20,
+            "original_line": 20,
+            "body": "**[BLOCKER] Division by zero**\n\nFix",
+        }
+    ]
+    captured_requests = []
+
+    def mock_urlopen(req, timeout=None):
+        captured_requests.append(req)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(mock_comments).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        comments = fetch_pr_comments("owner", "repo", 42, "mock-token")
+
+    assert len(comments) == 1  # D-1
+    assert comments[0]["path"] == "scorer/usage.py"  # D-1
+    assert len(captured_requests) == 1  # D-1
+    req = captured_requests[0]
+    assert req.full_url == "https://api.github.com/repos/owner/repo/pulls/42/comments?per_page=100"  # D-1
+    assert req.headers["Authorization"] == "Bearer mock-token"  # D-1
+    assert req.headers["Accept"] == "application/vnd.github+json"  # D-1
+    assert req.headers.get("User-agent") == "automated-pr-reviewer/1.0" or req.headers.get("User-Agent") == "automated-pr-reviewer/1.0"  # D-1
+    assert req.headers.get("X-github-api-version") == "2022-11-28" or req.headers.get("X-GitHub-Api-Version") == "2022-11-28"  # D-1
+
+
+def test_fetch_pr_comments_network_error_fallback_empty_list(capsys):
+    """Decision D-6: Network error or HTTP error during comment fetch logs a warning and returns empty list gracefully."""
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
+        comments = fetch_pr_comments("owner", "repo", 42, "mock-token")
+        assert comments == []  # D-6
+
+    captured = capsys.readouterr()
+    assert "[Warning] Could not fetch existing PR comments from GitHub API" in captured.out  # D-6
+
+
+# =====================================================================
+# Decision D-2: Finding Fingerprint & Duplicate Comment Matching (_is_duplicate_comment)
+# =====================================================================
+
+def test_is_duplicate_comment_exact_match():
+    """Decision D-2: Matches comment on identical file path, line number, and title."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Potential zero denominator.",
+    )
+    existing_comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": 20,
+            "original_line": 20,
+            "body": "**[BLOCKER] Division by zero**\n\nDetails...",
+        }
+    ]
+    assert _is_duplicate_comment(finding, existing_comments) is True  # D-2
+
+
+def test_is_duplicate_comment_original_line_match():
+    """Decision D-2: Matches comment on original_line when active line shifted or is None."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Potential zero denominator.",
+    )
+    existing_comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": None,
+            "original_line": 20,
+            "body": "**[BLOCKER] Division by zero**",
+        }
+    ]
+    assert _is_duplicate_comment(finding, existing_comments) is True  # D-2
+
+
+def test_is_duplicate_comment_different_line_or_path_returns_false():
+    """Decision D-2: Returns False when file path or line number differs."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Potential zero denominator.",
+    )
+    diff_path_comments = [
+        {
+            "path": "scorer/other.py",
+            "line": 20,
+            "body": "**[BLOCKER] Division by zero**",
+        }
+    ]
+    diff_line_comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": 99,
+            "body": "**[BLOCKER] Division by zero**",
+        }
+    ]
+    assert _is_duplicate_comment(finding, diff_path_comments) is False  # D-2
+    assert _is_duplicate_comment(finding, diff_line_comments) is False  # D-2
+
+
+def test_is_duplicate_comment_different_title_on_same_line_returns_false():
+    """Decision D-2: Returns False when line matches but defect title/type is completely different."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Potential zero denominator.",
+    )
+    other_defect_comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": 20,
+            "body": "**[WARNING] Unused import**\n\nUnused os module.",
+        }
+    ]
+    assert _is_duplicate_comment(finding, other_defect_comments) is False  # D-2
+
+
+def test_is_duplicate_comment_case_and_whitespace_insensitivity():
+    """Decision D-2: Matches finding title regardless of casing and markdown whitespace variations."""
+    finding = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Details",
+    )
+    comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": 20,
+            "body": "  **[blocker] division by zero**  \n\nExtra context",
+        }
+    ]
+    assert _is_duplicate_comment(finding, comments) is True  # D-2
+
+
+# =====================================================================
+# Decision D-3, D-4, D-5: Deduplicated Review Posting (post_github_pr_review)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_post_github_pr_review_skips_duplicate_inline_comments(capsys):
+    """Decision D-3, D-4: Only newly introduced findings are posted inline, while full summary details all findings."""
+    f1 = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Zero denominator.",
+    )
+    f2 = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=40,
+        severity=PRFindingSeverity.WARNING,
+        title="Unchecked None",
+        details="Variable may be None.",
+    )
+    report = PRReviewReport(
+        overall_status=ReviewStatus.REQUEST_CHANGES,
+        summary="Found 2 issues.",
+        findings=[f1, f2],
+    )
+    existing_comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": 20,
+            "body": "**[BLOCKER] Division by zero**",
+        }
+    ]
+    diff_hunks = {"scorer/usage.py": [20, 40]}
+
+    captured_requests = []
+
+    def mock_urlopen(req, timeout=None):
+        captured_requests.append(req)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b'{"id": 1, "state": "CHANGES_REQUESTED"}'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        result = await post_github_pr_review(
+            report=report,
+            pr_number="42",
+            repo="owner/repo",
+            token="mock-token",
+            modified_files_diff=diff_hunks,
+            existing_comments=existing_comments,
+        )
+
+    assert result is True  # D-3
+    assert len(captured_requests) == 1  # D-3
+    payload = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert len(payload["comments"]) == 1  # D-3: Only f2 is new
+    assert payload["comments"][0]["line"] == 40  # D-3
+    assert "Unchecked None" in payload["comments"][0]["body"]  # D-3
+    assert "Found 2 issues." in payload["body"]  # D-4
+    captured = capsys.readouterr()
+    assert "Skipped 1 duplicate inline review comment" in captured.out  # D-3
+
+
+@pytest.mark.asyncio
+async def test_post_github_pr_review_all_duplicates_submits_empty_comments_with_full_summary():
+    """Decision D-3, D-4: When all inline findings already exist, submits review with empty comments list and full summary."""
+    f1 = InlineFinding(
+        file_path="scorer/usage.py",
+        line_number=20,
+        severity=PRFindingSeverity.BLOCKER,
+        title="Division by zero",
+        details="Zero denominator.",
+    )
+    report = PRReviewReport(
+        overall_status=ReviewStatus.REQUEST_CHANGES,
+        summary="All open findings are duplicates.",
+        findings=[f1],
+    )
+    existing_comments = [
+        {
+            "path": "scorer/usage.py",
+            "line": 20,
+            "body": "**[BLOCKER] Division by zero**",
+        }
+    ]
+    diff_hunks = {"scorer/usage.py": [20]}
+
+    captured_requests = []
+
+    def mock_urlopen(req, timeout=None):
+        captured_requests.append(req)
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = b'{"id": 2, "state": "CHANGES_REQUESTED"}'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+        return mock_resp
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        result = await post_github_pr_review(
+            report=report,
+            pr_number="42",
+            repo="owner/repo",
+            token="mock-token",
+            modified_files_diff=diff_hunks,
+            existing_comments=existing_comments,
+        )
+
+    assert result is True  # D-3
+    assert len(captured_requests) == 1  # D-3
+    payload = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert payload["comments"] == []  # D-3: No new inline comments
+    assert payload["event"] == "COMMENT"  # D-3
+    assert "All open findings are duplicates." in payload["body"]  # D-4
+    assert "Status: REQUEST_CHANGES" in payload["body"]  # D-4
+
+
+@pytest.mark.asyncio
+async def test_run_pr_review_auto_fetches_comments_if_omitted():
+    """Decision D-1, D-3: When existing_comments is None, run_pr_review calls fetch_pr_comments internally."""
+    mock_report = PRReviewReport(
+        overall_status=ReviewStatus.APPROVE,
+        summary="Clean PR.",
+        findings=[],
+    )
+    mock_agent_response = MagicMock()
+    mock_agent_response.structured_output = AsyncMock(return_value=mock_report)
+    mock_agent = MagicMock()
+    mock_agent.__aenter__ = AsyncMock(return_value=mock_agent)
+    mock_agent.__aexit__ = AsyncMock(return_value=None)
+    mock_agent.chat = AsyncMock(return_value=mock_agent_response)
+
+    with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent), \
+         patch("pr_reviewer_agent.fetch_pr_comments", return_value=[]) as mock_fetch, \
+         patch("pr_reviewer_agent._send_github_review_sync", return_value=(200, "{}")) as mock_send, \
+         patch("pr_reviewer_agent.fetch_pr_modified_lines", return_value={}):
+        report = await run_pr_review(
+            pr_number="42",
+            repo="owner/repo",
+            token="mock-token",
+            existing_comments=None,
+        )
+
+    assert report is not None  # D-1
+    mock_fetch.assert_called_once_with("owner", "repo", "42", "mock-token")  # D-1

@@ -7,6 +7,8 @@ import os
 import sys
 import json
 import asyncio
+import urllib.request
+import urllib.error
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Union, Any
@@ -37,6 +39,33 @@ POSITIVE_APPROVAL_TEMPLATE = (
     "Great job! No code defects, architectural issues, or Cloud DLP security "
     "findings were detected in this pull request. All changes look clean and ready to merge."
 )
+
+
+class InlineFinding(BaseModel):
+    file_path: str
+    line_number: Optional[int] = None
+    severity: PRFindingSeverity
+    title: str
+    details: str
+    suggestion: str = ""
+    pii_leak: bool = False
+
+
+class PRReviewReport(BaseModel):
+    overall_status: ReviewStatus
+    summary: str
+    findings: list[InlineFinding] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def enforce_blocker_status(self) -> "PRReviewReport":
+        """If any finding is a BLOCKER or contains a pii_leak, enforce REQUEST_CHANGES (Decision D-4)."""
+        has_blocker = any(
+            f.severity == PRFindingSeverity.BLOCKER or f.pii_leak
+            for f in self.findings
+        )
+        if has_blocker and self.overall_status != ReviewStatus.REQUEST_CHANGES:
+            self.overall_status = ReviewStatus.REQUEST_CHANGES
+        return self
 
 
 def _sanitize_and_validate_repo(repo: str) -> Optional[tuple[str, str]]:
@@ -106,6 +135,139 @@ def fetch_pr_modified_lines(
         print(f"[Warning] Could not fetch PR diff hunks from GitHub API: {e}", flush=True)
 
     return diff_map
+
+
+def fetch_pr_comments(
+    owner: str,
+    repo_name: str,
+    pr_number: Union[str, int],
+    token: str,
+    timeout: int = 10,
+) -> list[dict[str, Any]]:
+    """Fetches all existing pull request review comments via GitHub REST API (Decision D-1).
+
+    Appends '?per_page=100' to query parameter. Returns parsed JSON array of comments.
+    If token is empty or whitespace, returns [] immediately without making network calls.
+    On any network or HTTP error, catches the exception, logs a non-fatal warning:
+    '[Warning] Could not fetch existing PR comments from GitHub API: {e}', and returns [] (Decision D-6).
+    """
+    if not token or not token.strip():
+        return []
+
+    url = f"https://api.github.com/repos/{owner}/{repo_name}/pulls/{pr_number}/comments?per_page=100"
+    req = urllib.request.Request(
+        url=url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "automated-pr-reviewer/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read().decode("utf-8")
+            parsed = json.loads(data)
+            if isinstance(parsed, list):
+                return [c for c in parsed if isinstance(c, dict)]
+            return []
+    except Exception as e:
+        print(f"[Warning] Could not fetch existing PR comments from GitHub API: {e}", flush=True)
+        return []
+
+
+def _is_duplicate_comment(
+    finding: InlineFinding,
+    existing_comments: list[dict[str, Any]],
+) -> bool:
+    """Checks if a candidate inline finding has already been posted in prior PR comments (Decision D-2).
+
+    A candidate InlineFinding is considered duplicate if:
+    1. comment.get("path") matches finding.file_path
+    2. comment.get("line") matches finding.line_number or comment.get("original_line") matches finding.line_number
+    3. comment.get("body") contains finding.title (case-insensitive substring match)
+    """
+    if not isinstance(existing_comments, list):
+        return False
+
+    finding_title_lower = finding.title.strip().lower()
+    for comment in existing_comments:
+        if not isinstance(comment, dict):
+            continue
+        comment_path = comment.get("path")
+        if comment_path != finding.file_path:
+            continue
+
+        c_line = comment.get("line")
+        c_orig_line = comment.get("original_line")
+        if finding.line_number is not None:
+            if c_line != finding.line_number and c_orig_line != finding.line_number:
+                continue
+        else:
+            if c_line is not None or c_orig_line is not None:
+                continue
+
+        c_body = (comment.get("body") or "").lower()
+        if finding_title_lower and finding_title_lower in c_body:
+            return True
+
+    return False
+
+
+def validate_and_sanitize_findings(
+    findings: list[InlineFinding],
+    modified_files_diff: dict[str, list[int]],
+) -> tuple[list[InlineFinding], list[InlineFinding]]:
+    """Separates findings into valid inline findings and general review findings.
+
+    Valid inline findings have a file_path present in modified_files_diff and a
+    line_number within the modified line ranges. Out-of-hunk or file-level findings
+    are relegated to general findings to avoid GitHub API 422 errors (Decision D-12).
+    """
+    inline_findings: list[InlineFinding] = []
+    general_findings: list[InlineFinding] = []
+
+    for finding in findings:
+        file_diff_lines = modified_files_diff.get(finding.file_path)
+        if (
+            file_diff_lines is not None
+            and finding.line_number is not None
+            and finding.line_number in file_diff_lines
+        ):
+            inline_findings.append(finding)
+        else:
+            general_findings.append(finding)
+
+    return inline_findings, general_findings
+
+
+def format_pr_review_text(report: PRReviewReport) -> str:
+    """Converts PRReviewReport into human-readable formatted text summary."""
+    lines: list[str] = []
+    lines.append(f"### Status: {report.overall_status.value}")
+    lines.append(f"Summary: {report.summary}\n")
+
+    if report.findings:
+        lines.append("### Findings:")
+        for idx, finding in enumerate(report.findings, 1):
+            coord = (
+                f"{finding.file_path}:{finding.line_number}"
+                if finding.line_number is not None
+                else finding.file_path
+            )
+            pii_tag = " [PII DETECTED]" if finding.pii_leak else ""
+            lines.append(
+                f"{idx}. [{finding.severity.value}] {coord} - {finding.title}{pii_tag}"
+            )
+            lines.append(f"   Details: {finding.details}")
+            if finding.suggestion:
+                lines.append(f"   Suggestion: {finding.suggestion}")
+            lines.append("")
+    else:
+        lines.append("No blocking issues or suggestions found.")
+
+    return "\n".join(lines)
 
 
 def _send_github_review_sync(
@@ -181,11 +343,12 @@ def _send_github_issue_comment_sync(
 
 
 async def post_github_pr_review(
-    report: "PRReviewReport",
+    report: PRReviewReport,
     pr_number: Union[str, int],
     repo: str,
     token: str,
     modified_files_diff: Optional[dict[str, list[int]]] = None,
+    existing_comments: Optional[list[dict[str, Any]]] = None,
 ) -> bool:
     """Posts a structured review to GitHub Pull Request Review API.
 
@@ -204,6 +367,7 @@ async def post_github_pr_review(
     owner, repo_name = repo_parsed
     event = "COMMENT" #event = report.overall_status.value
     comments: list[dict[str, Any]] = []
+    comments_to_check = existing_comments or []
 
     if not report.findings:
         if report.overall_status == ReviewStatus.APPROVE:
@@ -218,7 +382,11 @@ async def post_github_pr_review(
             report.findings, modified_files_diff or {}
         )
 
+        skipped_duplicates_count = 0
         for finding in inline_findings:
+            if _is_duplicate_comment(finding, comments_to_check):
+                skipped_duplicates_count += 1
+                continue
             if finding.line_number is not None:
                 comment_body = (
                     f"**[{finding.severity.value}] {finding.title}**"
@@ -234,6 +402,12 @@ async def post_github_pr_review(
                         "body": comment_body,
                     }
                 )
+
+        if skipped_duplicates_count > 0:
+            print(
+                f"ℹ️ Skipped {skipped_duplicates_count} duplicate inline review comment(s) already present on PR.",
+                flush=True,
+            )
 
         # Top-level body summary detailing status and general findings
         body_lines = [
@@ -345,90 +519,6 @@ async def post_github_pr_review(
         return False
 
 
-
-
-class InlineFinding(BaseModel):
-    file_path: str
-    line_number: Optional[int] = None
-    severity: PRFindingSeverity
-    title: str
-    details: str
-    suggestion: str = ""
-    pii_leak: bool = False
-
-
-class PRReviewReport(BaseModel):
-    overall_status: ReviewStatus
-    summary: str
-    findings: list[InlineFinding] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def enforce_blocker_status(self) -> "PRReviewReport":
-        """If any finding is a BLOCKER or contains a pii_leak, enforce REQUEST_CHANGES (Decision D-4)."""
-        has_blocker = any(
-            f.severity == PRFindingSeverity.BLOCKER or f.pii_leak
-            for f in self.findings
-        )
-        if has_blocker and self.overall_status != ReviewStatus.REQUEST_CHANGES:
-            self.overall_status = ReviewStatus.REQUEST_CHANGES
-        return self
-
-
-def validate_and_sanitize_findings(
-    findings: list[InlineFinding],
-    modified_files_diff: dict[str, list[int]],
-) -> tuple[list[InlineFinding], list[InlineFinding]]:
-    """Separates findings into valid inline findings and general review findings.
-
-    Valid inline findings have a file_path present in modified_files_diff and a
-    line_number within the modified line ranges. Out-of-hunk or file-level findings
-    are relegated to general findings to avoid GitHub API 422 errors (Decision D-12).
-    """
-    inline_findings: list[InlineFinding] = []
-    general_findings: list[InlineFinding] = []
-
-    for finding in findings:
-        file_diff_lines = modified_files_diff.get(finding.file_path)
-        if (
-            file_diff_lines is not None
-            and finding.line_number is not None
-            and finding.line_number in file_diff_lines
-        ):
-            inline_findings.append(finding)
-        else:
-            general_findings.append(finding)
-
-    return inline_findings, general_findings
-
-
-def format_pr_review_text(report: PRReviewReport) -> str:
-    """Converts PRReviewReport into human-readable formatted text summary."""
-    lines: list[str] = []
-    lines.append(f"### Status: {report.overall_status.value}")
-    lines.append(f"Summary: {report.summary}\n")
-
-    if report.findings:
-        lines.append("### Findings:")
-        for idx, finding in enumerate(report.findings, 1):
-            coord = (
-                f"{finding.file_path}:{finding.line_number}"
-                if finding.line_number is not None
-                else finding.file_path
-            )
-            pii_tag = " [PII DETECTED]" if finding.pii_leak else ""
-            lines.append(
-                f"{idx}. [{finding.severity.value}] {coord} - {finding.title}{pii_tag}"
-            )
-            lines.append(f"   Details: {finding.details}")
-            if finding.suggestion:
-                lines.append(f"   Suggestion: {finding.suggestion}")
-            lines.append("")
-    else:
-        lines.append("No blocking issues or suggestions found.")
-
-    return "\n".join(lines)
-
-
 async def run_pr_review(
     pr_number: Optional[str] = None,
     repo: Optional[str] = None,
@@ -438,6 +528,7 @@ async def run_pr_review(
     location: str = "us-central1",
     model: Optional[str] = None,
     modified_files_diff: Optional[dict[str, list[int]]] = None,
+    existing_comments: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[PRReviewReport]:
     """Runs automated PR review using Antigravity SDK and GitHub MCP server.
 
@@ -477,13 +568,18 @@ async def run_pr_review(
         or "gemini-3.7-flash"
     )
 
-    if modified_files_diff is None and pr_number and repo and token:
+    if pr_number and repo and token:
         repo_parsed = _sanitize_and_validate_repo(repo)
         if repo_parsed:
             owner, repo_name = repo_parsed
-            modified_files_diff = await asyncio.to_thread(
-                fetch_pr_modified_lines, owner, repo_name, pr_number, token
-            )
+            if modified_files_diff is None:
+                modified_files_diff = await asyncio.to_thread(
+                    fetch_pr_modified_lines, owner, repo_name, pr_number, token
+                )
+            if existing_comments is None:
+                existing_comments = await asyncio.to_thread(
+                    fetch_pr_comments, owner, repo_name, pr_number, token
+                )
 
     os.makedirs("reports", exist_ok=True)
     telemetry_dir = os.path.abspath("reports/telemetry/pr_review_agent")
@@ -634,6 +730,7 @@ async def run_pr_review(
                     repo=repo,
                     token=token,
                     modified_files_diff=modified_files_diff,
+                    existing_comments=existing_comments,
                 )
             return report
     except Exception as e:
@@ -678,6 +775,7 @@ async def run_pr_review(
             repo=repo,
             token=token,
             modified_files_diff=modified_files_diff,
+            existing_comments=existing_comments,
         )
     return report
 
