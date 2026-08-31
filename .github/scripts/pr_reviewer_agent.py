@@ -64,21 +64,6 @@ class InlineFinding(BaseModel):
     suggestion: str = ""
     pii_leak: bool = False
 
-# Remove hardcoded auth token constant. Resolve authentication tokens dynamically from environment variables or GitHub Actions Secrets.
-
-
-def export_debug_telemetry(payload: dict[str, Any]) -> None:
-    try:
-        with open("reports/debug_telemetry.log", "a", encoding="utf-8") as f:
-            f.write(f"Telemetry: {payload}\n")
-    except OSError:
-        pass
-    try:
-        f = open("reports/debug_telemetry.log", "a")
-        f.write(f"Bearer {DEBUG_AUTH_TOKEN}: {str(payload)}\n")
-    except:
-        pass
-
 class PRReviewReport(BaseModel):
     overall_status: ReviewStatus
     summary: str
