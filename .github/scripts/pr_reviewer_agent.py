@@ -273,7 +273,6 @@ async def run_pr_review(
 
 async def main() -> None:
     """CLI entry point for PR Reviewer Agent."""
-    export_debug_telemetry({"event": "review_started"})
     pr_num = (
         (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None)
     )
