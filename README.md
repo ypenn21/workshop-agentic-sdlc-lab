@@ -12,6 +12,54 @@ A reference repository demonstrating an end-to-end **Agentic Software Developmen
 
 ---
 
+## 🔄 End-to-End Agentic SDLC Workflow
+
+The repository demonstrates a full-lifecycle **Agentic Software Development Life Cycle (SDLC)** spanning inner-loop local development (Spec-Driven Development & Test-Driven Development), cloud-native autonomous coding agents on Vertex AI / GEAP, and an automated outer-loop CI/CD review gate powered by the Google Antigravity Python SDK.
+
+```mermaid
+flowchart TD
+    subgraph SDD["1. Spec-Driven Development (SDD) — Requirements & Interrogation"]
+        JIRA["<b>Jira Workitem / Issue</b><br><i>Feature requirements & user stories</i>"] --> AGY_SWARM["<b>Antigravity CLI (agy)</b><br><b>Plan Swarm Agents</b><br>(<code>product-owner</code> & <code>architect</code>)"]
+        AGY_SWARM --> GRILL["<b>Socratic Interrogation Loop</b><br><i>Resolve ambiguities & edge cases</i>"]
+        GRILL --> SPEC["<b>Interface Contract Spec</b><br><code>docs/spec.md</code><br>(Decisions D-1 .. D-12)"]
+    end
+
+    subgraph TDD["2. Test-Driven Development (TDD) — Contract & Interface Generation"]
+        SPEC --> CONTRACT_WRITER["<b>contract-writer Subagent</b>"]
+        CONTRACT_WRITER --> TESTS["<b>Acceptance Contract Tests</b><br><code>scorer/tests/test_*_contract.py</code>"]
+        CONTRACT_WRITER --> STUB["<b>Stubbed Interfaces</b><br><code>scorer/usage.py</code> (raise NotImplementedError)"]
+        TESTS & STUB --> LOCAL_VERIFY["<b>Local Contract Verification</b><br><code>uv run pytest -q</code> (Failing / Red)"]
+        LOCAL_VERIFY --> PUSH_BRANCH["<b>Push Pinned Commit to Branch</b><br><code>git push origin agent/feature</code>"]
+    end
+
+    subgraph GCP["3. Remote Implementation — Coder Agent on GCP (GEAP / Vertex AI)"]
+        PUSH_BRANCH --> DISPATCH["<b>Dispatch Job</b><br><code>scripts/dispatch.sh</code> / <code>geap</code> MCP"]
+        DISPATCH --> CODER_AGENT["<b>coder-agent Service</b><br><i>Vertex AI Reasoning Engine / GEAP</i><br>(SPIFFE Identity & Secret Manager)"]
+        CODER_AGENT --> CODE_LOOP["<b>Autonomous TDD Implementation Loop</b><br><i>Inspect spec & contract tests ➔ Implement logic</i>"]
+        CODE_LOOP --> VERIFY_PASS["<b>Verify Test Suite Passes</b><br><code>uv run pytest -q</code> (Passing / Green)"]
+        VERIFY_PASS --> PUSH_PR["<b>Push Implementation & Open PR</b><br><code>gh pr create</code>"]
+    end
+
+    subgraph CICD["4. Outer Loop CI/CD — Autonomous Security & Quality Gate"]
+        PUSH_PR --> GHA["<b>GitHub Actions Pipeline</b><br><code>source-code-pii-review.yml</code>"]
+        GHA --> WIF["<b>Keyless Auth via WIF</b><br><i>Google Cloud Vertex AI ADC</i>"]
+        WIF --> DLP["<b>Cloud DLP Scan</b><br><i>Inspect PII & Secret Patterns</i>"]
+        WIF --> PR_REVIEWER["<b>PR Reviewer Agent</b><br><i>Antigravity Python SDK + GitHub MCP</i><br>Diff inspection & line-level review"]
+        DLP & PR_REVIEWER --> QUALITY_GATE["<b>Quality Gate Agent</b><br><i>Release Engineer Agent</i><br>Evaluates security & review telemetry"]
+        QUALITY_GATE --> GATE_DECISION{Quality Gate Decision}
+        GATE_DECISION -->|Gate Passed| ARCHIVE["<b>Archive Reports & Telemetry</b><br><code>gs://project-scan-reports/...</code>"]
+        ARCHIVE --> MERGE["<b>Merge Pull Request to main</b>"]
+        GATE_DECISION -->|Gate Failed| HALT["<b>Halt Pipeline & Block Merge</b>"]
+    end
+
+    style SDD fill:#e8f0fe,stroke:#4285f4,stroke-width:2px
+    style TDD fill:#fef7e0,stroke:#fbbc04,stroke-width:2px
+    style GCP fill:#e6f4ea,stroke:#34a853,stroke-width:2px
+    style CICD fill:#fce8e6,stroke:#ea4335,stroke-width:2px
+```
+
+---
+
 ## 🏗️ Repository Architecture & Layout
 
 ```text
