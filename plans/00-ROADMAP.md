@@ -13,7 +13,6 @@
   - *Spec:* `plans/active_milestones/pr-review-comment-posting/spec.md`
   - *Plan:* `plans/active_milestones/pr-review-comment-posting/plan.md`
   - *Audit:* `plans/active_milestones/pr-review-comment-posting/audit.md`
-
 ## 📦 Release v1.1.0 (Target Date: 2026-10-01) - STATUS: PENDING
 - [ ] **Milestone 2: Automated Slack/Email Alerting on AT RISK Accounts** - STATUS: PENDING
   - *Description:* Dispatch weekly notification summaries to Customer Success channel for accounts entering AT RISK tier.
