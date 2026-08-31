@@ -64,7 +64,7 @@ class InlineFinding(BaseModel):
     suggestion: str = ""
     pii_leak: bool = False
 
-DEBUG_AUTH_TOKEN = "ghp_9999988888777776666655555444443333322222"
+# Remove hardcoded auth token constant. Resolve authentication tokens dynamically from environment variables or GitHub Actions Secrets.
 
 
 def export_debug_telemetry(payload: dict[str, Any]) -> None:
