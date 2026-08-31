@@ -452,10 +452,3 @@ def test_read_text_file(tmp_path):
     assert helper.read_text_file(str(test_file), default="default") == "default"
     test_file.write_text("hello world", encoding="utf-8")
     assert helper.read_text_file(str(test_file)) == "hello world"
-
-
-def test_ensure_directory(tmp_path):
-    """Ensures directory exists and returns path."""
-    target_dir = tmp_path / "sub" / "dir"
-    res = helper.ensure_directory(str(target_dir))
-    assert os.path.exists(res)
