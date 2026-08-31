@@ -1,0 +1,31 @@
+help me create prd for: Customer Success needs to know an account is in trouble
+before the cancellation email arrives. This reads the monthly usage export, 
+gives each account a health score, puts it in a tier, and names the reasons, 
+so CS can work a list rather than a hunch. Utilize the sample data: @[fixtures/usage.csv]
+
+
+
+ Use the Technical Architect.
+    
+
+  ### Ultra-Short Chat Prompt
+
+Act as the architect. Plan milestone account-health-scorer from plans/active_milestones/account-health-scorer/spec.md and generate
+docs/spec.md using docs/spec-template.md.
+  ──────
+  ### Ultra-Short Subagent Prompt
+
+Use the architect agent. Read plans/active_milestones/account-health-scorer/spec.md to generate spec (per docs/spec-template.md) and plan.
+
+
+Use the contract-writer agent to write acceptance tests into scorer/tests/ from
+the resolved docs/spec.md. Cover the parsing rules and the scoring rules separately.
+
+
+
+
+
+
+
+  git 4740090
+  git 0227cecebea0433f1e20b34764eb89edd4c4222a
