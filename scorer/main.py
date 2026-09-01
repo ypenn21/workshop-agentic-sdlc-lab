@@ -24,9 +24,12 @@ def main() -> None:
     try:
         from usage import parse_usage, score
     except ImportError:
-        print(f"{len(rows)} rows, {len(accounts)} accounts: {', '.join(accounts)}")
-        print("No scorer yet. Implement parse_usage and score in scorer/usage.py.")
-        return
+        try:
+            from scorer.usage import parse_usage, score
+        except ImportError:
+            print(f"{len(rows)} rows, {len(accounts)} accounts: {', '.join(accounts)}")
+            print("No scorer yet. Implement parse_usage and score in scorer/usage.py.")
+            return
 
     for account, months in sorted(parse_usage(text).items()):
         result = score(months)
