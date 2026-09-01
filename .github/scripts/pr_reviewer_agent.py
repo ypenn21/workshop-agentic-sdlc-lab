@@ -16,26 +16,43 @@ from google.antigravity import Agent, LocalAgentConfig, types
 from helper import (
     POSITIVE_APPROVAL_TEMPLATE,
     sanitize_and_validate_repo,
-    _sanitize_and_validate_repo,
     fetch_pr_modified_lines,
     fetch_pr_comments,
     is_duplicate_comment,
-    _is_duplicate_comment,
     validate_and_sanitize_findings,
     send_github_review_sync,
-    _send_github_review_sync,
     send_github_issue_comment_sync,
-    _send_github_issue_comment_sync,
     post_github_pr_review,
     format_pr_review_text,
     write_pr_reports,
-    _write_pr_reports,
     resolve_env_config,
     ensure_directory,
     read_text_file,
     create_github_mcp_server,
     parse_agent_structured_output,
 )
+
+__all__ = [
+    "PRFindingSeverity",
+    "ReviewSeverity",
+    "ReviewStatus",
+    "InlineFinding",
+    "PRReviewReport",
+    "POSITIVE_APPROVAL_TEMPLATE",
+    "sanitize_and_validate_repo",
+    "fetch_pr_modified_lines",
+    "fetch_pr_comments",
+    "is_duplicate_comment",
+    "validate_and_sanitize_findings",
+    "send_github_review_sync",
+    "send_github_issue_comment_sync",
+    "post_github_pr_review",
+    "format_pr_review_text",
+    "write_pr_reports",
+    "run_pr_review",
+    "build_pr_review_prompt",
+    "main",
+]
 
 
 class PRFindingSeverity(str, Enum):
@@ -214,7 +231,7 @@ async def run_pr_review(
             print(report.model_dump_json(indent=2), flush=True)
             print("=" * 60 + "\n", flush=True)
 
-            _write_pr_reports(report)
+            write_pr_reports(report)
             if pr_num:
                 await post_github_pr_review(
                     report=report,
@@ -259,7 +276,7 @@ async def run_pr_review(
             findings=[],
         )
 
-    _write_pr_reports(report)
+    write_pr_reports(report)
     if pr_num:
         await post_github_pr_review(
             report=report,

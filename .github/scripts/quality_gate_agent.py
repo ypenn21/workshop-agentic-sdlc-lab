@@ -11,19 +11,29 @@ import sys
 import asyncio
 from enum import Enum
 from typing import Optional
-from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 from google.antigravity import Agent, LocalAgentConfig
 
 from helper import (
     format_text_decision,
     write_gate_reports,
-    _write_reports,
     resolve_env_config,
     ensure_directory,
     read_text_file,
     parse_agent_structured_output,
 )
+
+__all__ = [
+    "SeverityLevel",
+    "ViolationCategory",
+    "FailureDetail",
+    "QualityGateDecision",
+    "format_text_decision",
+    "write_gate_reports",
+    "evaluate_quality_gate",
+    "build_quality_gate_prompt",
+    "main",
+]
 
 
 class SeverityLevel(str, Enum):
@@ -121,7 +131,7 @@ async def evaluate_quality_gate(
                 )
             ],
         )
-        _write_reports(decision)
+        write_gate_reports(decision)
         return decision
 
     pii_content = read_text_file(pii_report_path)
@@ -144,7 +154,7 @@ async def evaluate_quality_gate(
                     )
                 ],
             )
-            _write_reports(decision)
+            write_gate_reports(decision)
             return decision
     else:
         pr_review_content = read_text_file(pr_review_path)
@@ -205,7 +215,7 @@ async def evaluate_quality_gate(
             response = await agent.chat(prompt)
             raw_output = await response.structured_output()
             decision = parse_agent_structured_output(raw_output, QualityGateDecision)
-            _write_reports(decision)
+            write_gate_reports(decision)
             return decision
     except Exception:
         # Fallback to deterministic evaluation
@@ -224,7 +234,7 @@ async def evaluate_quality_gate(
             failures=[],
         )
 
-    _write_reports(decision)
+    write_gate_reports(decision)
     return decision
 
 

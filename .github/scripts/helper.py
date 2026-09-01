@@ -139,9 +139,6 @@ def sanitize_and_validate_repo(repo: str) -> Optional[tuple[str, str]]:
     return None
 
 
-# Backward-compatible alias
-_sanitize_and_validate_repo = sanitize_and_validate_repo
-
 
 def fetch_pr_modified_lines(
     owner: str,
@@ -258,9 +255,6 @@ def is_duplicate_comment(
     return False
 
 
-# Backward-compatible alias
-_is_duplicate_comment = is_duplicate_comment
-
 
 def validate_and_sanitize_findings(
     findings: list[Any],
@@ -324,10 +318,6 @@ def send_github_review_sync(
         return 0, str(e)
 
 
-# Backward-compatible alias
-_send_github_review_sync = send_github_review_sync
-
-
 def send_github_issue_comment_sync(
     owner: str,
     repo_name: str,
@@ -359,10 +349,6 @@ def send_github_issue_comment_sync(
     except Exception as e:
         print(f"[Warning] Failed to post PR comment fallback: {e}", flush=True)
         return 0, str(e)
-
-
-# Backward-compatible alias
-_send_github_issue_comment_sync = send_github_issue_comment_sync
 
 
 async def post_github_pr_review(
@@ -653,10 +639,6 @@ def write_pr_reports(report: Any) -> None:
     )
 
 
-# Backward-compatible alias
-_write_pr_reports = write_pr_reports
-
-
 def write_gate_reports(decision: Any) -> None:
     """Writes reports/gate-decision.json and reports/decision.txt."""
     text_content = format_text_decision(decision)
@@ -666,10 +648,6 @@ def write_gate_reports(decision: Any) -> None:
         text_path="reports/decision.txt",
         text_content=text_content,
     )
-
-
-# Backward-compatible alias
-_write_reports = write_gate_reports
 
 
 # =====================================================================

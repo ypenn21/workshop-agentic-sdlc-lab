@@ -87,8 +87,6 @@ def test_sanitize_and_validate_repo_valid():
     assert helper.sanitize_and_validate_repo("  owner/repo.git  ") == ("owner", "repo")
     assert helper.sanitize_and_validate_repo("'owner/repo'") == ("owner", "repo")
     assert helper.sanitize_and_validate_repo('"owner/repo.git"') == ("owner", "repo")
-    # Private alias
-    assert helper._sanitize_and_validate_repo("owner/repo") == ("owner", "repo")
 
 
 def test_sanitize_and_validate_repo_invalid():
@@ -244,7 +242,6 @@ def test_is_duplicate_comment_matching():
         {"path": "src/app.py", "line": 15, "body": "**[BLOCKER] Uncaught Exception**\nDetails"},
     ]
     assert helper.is_duplicate_comment(finding, comments) is True
-    assert helper._is_duplicate_comment(finding, comments) is True
 
 
 def test_is_duplicate_comment_no_match():

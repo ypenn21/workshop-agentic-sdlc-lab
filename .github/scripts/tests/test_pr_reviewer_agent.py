@@ -27,15 +27,15 @@ from pr_reviewer_agent import (
     InlineFinding,
     PRReviewReport,
     POSITIVE_APPROVAL_TEMPLATE,
-    _sanitize_and_validate_repo,
-    _send_github_review_sync,
+    sanitize_and_validate_repo,
+    send_github_review_sync,
     post_github_pr_review,
     validate_and_sanitize_findings,
     format_pr_review_text,
     run_pr_review,
     fetch_pr_modified_lines,
     fetch_pr_comments,
-    _is_duplicate_comment,
+    is_duplicate_comment,
 )
 
 
@@ -803,10 +803,10 @@ async def test_run_pr_review_writes_artifacts_before_posting(tmp_path, monkeypat
 
 def test_post_github_pr_review_repo_sanitization():
     """Decision D-8, Scenario 7: Repo strings with whitespace, quotes, and .git suffix are correctly sanitized."""
-    assert _sanitize_and_validate_repo(" org/repo.git ") == ("org", "repo")  # D-8
-    assert _sanitize_and_validate_repo("'owner/my-repo'") == ("owner", "my-repo")  # D-8
-    assert _sanitize_and_validate_repo('"owner/my-repo.git"') == ("owner", "my-repo")  # D-8
-    assert _sanitize_and_validate_repo("simple-owner/simple-repo") == ("simple-owner", "simple-repo")  # D-8
+    assert sanitize_and_validate_repo(" org/repo.git ") == ("org", "repo")  # D-8
+    assert sanitize_and_validate_repo("'owner/my-repo'") == ("owner", "my-repo")  # D-8
+    assert sanitize_and_validate_repo('"owner/my-repo.git"') == ("owner", "my-repo")  # D-8
+    assert sanitize_and_validate_repo("simple-owner/simple-repo") == ("simple-owner", "simple-repo")  # D-8
 
 
 @pytest.mark.asyncio
@@ -1041,7 +1041,7 @@ def test_fetch_pr_comments_network_error_fallback_empty_list(capsys):
 
 
 # =====================================================================
-# Decision D-2: Finding Fingerprint & Duplicate Comment Matching (_is_duplicate_comment)
+# Decision D-2: Finding Fingerprint & Duplicate Comment Matching (is_duplicate_comment)
 # =====================================================================
 
 def test_is_duplicate_comment_exact_match():
@@ -1061,7 +1061,7 @@ def test_is_duplicate_comment_exact_match():
             "body": "**[BLOCKER] Division by zero**\n\nDetails...",
         }
     ]
-    assert _is_duplicate_comment(finding, existing_comments) is True  # D-2
+    assert is_duplicate_comment(finding, existing_comments) is True  # D-2
 
 
 def test_is_duplicate_comment_original_line_match():
@@ -1081,7 +1081,7 @@ def test_is_duplicate_comment_original_line_match():
             "body": "**[BLOCKER] Division by zero**",
         }
     ]
-    assert _is_duplicate_comment(finding, existing_comments) is True  # D-2
+    assert is_duplicate_comment(finding, existing_comments) is True  # D-2
 
 
 def test_is_duplicate_comment_different_line_or_path_returns_false():
@@ -1107,8 +1107,8 @@ def test_is_duplicate_comment_different_line_or_path_returns_false():
             "body": "**[BLOCKER] Division by zero**",
         }
     ]
-    assert _is_duplicate_comment(finding, diff_path_comments) is False  # D-2
-    assert _is_duplicate_comment(finding, diff_line_comments) is False  # D-2
+    assert is_duplicate_comment(finding, diff_path_comments) is False  # D-2
+    assert is_duplicate_comment(finding, diff_line_comments) is False  # D-2
 
 
 def test_is_duplicate_comment_different_title_on_same_line_returns_false():
@@ -1127,7 +1127,7 @@ def test_is_duplicate_comment_different_title_on_same_line_returns_false():
             "body": "**[WARNING] Unused import**\n\nUnused os module.",
         }
     ]
-    assert _is_duplicate_comment(finding, other_defect_comments) is False  # D-2
+    assert is_duplicate_comment(finding, other_defect_comments) is False  # D-2
 
 
 def test_is_duplicate_comment_case_and_whitespace_insensitivity():
@@ -1146,7 +1146,7 @@ def test_is_duplicate_comment_case_and_whitespace_insensitivity():
             "body": "  **[blocker] division by zero**  \n\nExtra context",
         }
     ]
-    assert _is_duplicate_comment(finding, comments) is True  # D-2
+    assert is_duplicate_comment(finding, comments) is True  # D-2
 
 
 # =====================================================================
@@ -1287,7 +1287,7 @@ async def test_run_pr_review_auto_fetches_comments_if_omitted():
 
     with patch.object(pr_reviewer_agent, "Agent", return_value=mock_agent), \
          patch("pr_reviewer_agent.fetch_pr_comments", return_value=[]) as mock_fetch, \
-         patch("pr_reviewer_agent._send_github_review_sync", return_value=(200, "{}")) as mock_send, \
+         patch("pr_reviewer_agent.send_github_review_sync", return_value=(200, "{}")) as mock_send, \
          patch("pr_reviewer_agent.fetch_pr_modified_lines", return_value={}):
         report = await run_pr_review(
             pr_number="42",

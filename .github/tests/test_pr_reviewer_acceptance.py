@@ -26,13 +26,13 @@ from pr_reviewer_agent import (
     InlineFinding,
     PRReviewReport,
     POSITIVE_APPROVAL_TEMPLATE,
-    _sanitize_and_validate_repo,
+    sanitize_and_validate_repo,
     post_github_pr_review,
     run_pr_review,
     validate_and_sanitize_findings,
     format_pr_review_text,
     fetch_pr_comments,
-    _is_duplicate_comment,
+    is_duplicate_comment,
 )
 
 
